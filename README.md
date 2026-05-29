@@ -78,3 +78,41 @@ python3 apps/sensor_medico.py --grupo triagem --count 3
 ```
 
 O servidor deve exibir mensagens recebidas dos tres grupos.
+
+## Executar Subtarefa 3
+
+Os scripts VNF ficam em `vnf/` e devem ser executados dentro do respectivo gateway/container com privilegios de rede.
+
+Preparar gateways:
+
+```bash
+sudo ./vnf/gw_uti.sh
+sudo ./vnf/gw_enfermaria.sh
+sudo ./vnf/gw_triagem.sh
+```
+
+Aplicar e reverter politicas:
+
+```bash
+sudo ./vnf/limitar_enfermaria.sh
+sudo ./vnf/bloquear_triagem.sh
+sudo ./vnf/restaurar_politicas.sh
+```
+
+Variaveis uteis para adaptar ao ambiente:
+
+```bash
+SERVER_IP=10.0.100.10
+UTI_NET=10.0.1.0/24
+ENFERMARIA_NET=10.0.2.0/24
+TRIAGEM_NET=10.0.3.0/24
+WAN_IFACE=eth1
+LIMIT_RATE=256kbit
+```
+
+Validacao esperada:
+
+```bash
+sudo iptables -L -v -n
+sudo tc qdisc show dev eth1
+```
