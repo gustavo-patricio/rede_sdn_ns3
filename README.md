@@ -53,13 +53,14 @@ O desenvolvimento sera feito em etapas:
 8. Evidencias.
 9. Relatorio tecnico.
 
-## Proxima Etapa
+## Status Atual
 
-A subtarefa atual implementa as aplicacoes basicas:
+Subtarefas implementadas ate agora:
 
-- servidor hospitalar central;
-- sensor medico generico;
-- envio de mensagens por grupo: UTI, enfermaria e triagem.
+- base do repositorio;
+- aplicacoes basicas com sensores e servidor;
+- scripts VNF para gateways e politicas;
+- controlador Ryu e topologia Mininet inicial.
 
 ## Executar Subtarefa 2
 
@@ -115,4 +116,51 @@ Validacao esperada:
 ```bash
 sudo iptables -L -v -n
 sudo tc qdisc show dev eth1
+```
+
+## Executar Subtarefa 4
+
+Dependencias esperadas no ambiente:
+
+```bash
+ryu-manager
+mininet
+openvswitch-switch
+```
+
+Terminal 1: iniciar o controlador Ryu:
+
+```bash
+ryu-manager controller/ryu_controller.py --ofp-tcp-listen-port 6633
+```
+
+Terminal 2: iniciar a topologia Mininet:
+
+```bash
+sudo python3 topology/hospital_topology.py
+```
+
+Dentro do CLI do Mininet, validar conectividade passando pelos gateways:
+
+```bash
+sensor-uti-1 ping -c 2 10.0.100.10
+sensor-enfermaria-1 ping -c 2 10.0.100.10
+sensor-triagem-1 ping -c 2 10.0.100.10
+```
+
+Validar fluxos OpenFlow:
+
+```bash
+ovs-ofctl -O OpenFlow13 dump-flows s1
+ovs-ofctl -O OpenFlow13 dump-flows s2
+ovs-ofctl -O OpenFlow13 dump-flows s3
+ovs-ofctl -O OpenFlow13 dump-flows s4
+```
+
+Validar rotas:
+
+```bash
+sensor-uti-1 ip route
+server ip route
+gw-uti sysctl net.ipv4.ip_forward
 ```
