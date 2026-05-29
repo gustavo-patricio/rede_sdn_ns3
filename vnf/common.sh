@@ -19,11 +19,19 @@ require_command() {
 }
 
 enable_forwarding() {
-    if [ -w /proc/sys/net/ipv4/ip_forward ]; then
-        echo 1 > /proc/sys/net/ipv4/ip_forward
-    else
-        sysctl -w net.ipv4.ip_forward=1 >/dev/null
+    if [ "$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo 0)" = "1" ]; then
+        return
     fi
+
+    if [ -w /proc/sys/net/ipv4/ip_forward ] && echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null; then
+        return
+    fi
+
+    if sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1; then
+        return
+    fi
+
+    echo "Aviso: nao foi possivel ativar net.ipv4.ip_forward no runtime." >&2
 }
 
 ensure_forward_accept() {

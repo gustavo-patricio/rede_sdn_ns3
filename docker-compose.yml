@@ -35,6 +35,7 @@ services:
       context: .
       dockerfile: vnf/Dockerfile
     container_name: gw-uti
+    privileged: true
     cap_add:
       - NET_ADMIN
     sysctls:
@@ -51,6 +52,7 @@ services:
       context: .
       dockerfile: vnf/Dockerfile
     container_name: gw-enfermaria
+    privileged: true
     cap_add:
       - NET_ADMIN
     sysctls:
@@ -67,6 +69,7 @@ services:
       context: .
       dockerfile: vnf/Dockerfile
     container_name: gw-triagem
+    privileged: true
     cap_add:
       - NET_ADMIN
     sysctls:
