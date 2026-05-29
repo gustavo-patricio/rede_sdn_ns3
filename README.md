@@ -61,6 +61,7 @@ Subtarefas implementadas ate agora:
 - aplicacoes basicas com sensores e servidor;
 - scripts VNF para gateways e politicas;
 - controlador Ryu e topologia Mininet inicial.
+- Docker Compose com controlador, servidor, sensores e gateways.
 
 ## Executar Subtarefa 2
 
@@ -163,4 +164,59 @@ Validar rotas:
 sensor-uti-1 ip route
 server ip route
 gw-uti sysctl net.ipv4.ip_forward
+```
+
+## Executar Subtarefa 5
+
+Subir todos os containers:
+
+```bash
+docker compose up -d --build
+```
+
+Verificar containers:
+
+```bash
+docker compose ps
+```
+
+Ver logs do servidor hospitalar:
+
+```bash
+docker compose logs -f server
+```
+
+Validar rotas dentro dos containers:
+
+```bash
+docker compose exec sensor-uti-1 ip route
+docker compose exec server ip route
+docker compose exec gw-uti sysctl net.ipv4.ip_forward
+```
+
+Aplicar limitacao no gateway da enfermaria:
+
+```bash
+docker compose exec gw-enfermaria bash -lc 'WAN_IFACE=eth1 /opt/vnf/limitar_enfermaria.sh'
+docker compose exec gw-enfermaria tc qdisc show dev eth1
+```
+
+Bloquear triagem:
+
+```bash
+docker compose exec gw-triagem bash -lc '/opt/vnf/bloquear_triagem.sh'
+docker compose exec gw-triagem iptables -L FORWARD -v -n
+```
+
+Restaurar politicas:
+
+```bash
+docker compose exec gw-enfermaria bash -lc 'WAN_IFACE=eth1 /opt/vnf/restaurar_politicas.sh'
+docker compose exec gw-triagem bash -lc '/opt/vnf/restaurar_politicas.sh'
+```
+
+Encerrar ambiente:
+
+```bash
+docker compose down
 ```

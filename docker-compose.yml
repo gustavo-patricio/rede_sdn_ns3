@@ -1,0 +1,236 @@
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: controller/Dockerfile
+    container_name: controller
+    ports:
+      - "6633:6633"
+      - "8080:8080"
+    networks:
+      hospital_core:
+        ipv4_address: 10.0.100.20
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/Dockerfile
+    container_name: server
+    cap_add:
+      - NET_ADMIN
+    command:
+      - sh
+      - -c
+      - |
+        ip route add 10.0.1.0/24 via 10.0.100.1 2>/dev/null || true
+        ip route add 10.0.2.0/24 via 10.0.100.2 2>/dev/null || true
+        ip route add 10.0.3.0/24 via 10.0.100.3 2>/dev/null || true
+        python3 /app/servidor_hospitalar.py --host 0.0.0.0 --port 9000
+    networks:
+      hospital_core:
+        ipv4_address: 10.0.100.10
+
+  gw-uti:
+    build:
+      context: .
+      dockerfile: vnf/Dockerfile
+    container_name: gw-uti
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    command: ["bash", "-lc", "SERVER_IP=10.0.100.10 UTI_NET=10.0.1.0/24 /opt/vnf/gw_uti.sh && sleep infinity"]
+    networks:
+      uti_net:
+        ipv4_address: 10.0.1.1
+      hospital_core:
+        ipv4_address: 10.0.100.1
+
+  gw-enfermaria:
+    build:
+      context: .
+      dockerfile: vnf/Dockerfile
+    container_name: gw-enfermaria
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    command: ["bash", "-lc", "SERVER_IP=10.0.100.10 ENFERMARIA_NET=10.0.2.0/24 /opt/vnf/gw_enfermaria.sh && sleep infinity"]
+    networks:
+      enfermaria_net:
+        ipv4_address: 10.0.2.1
+      hospital_core:
+        ipv4_address: 10.0.100.2
+
+  gw-triagem:
+    build:
+      context: .
+      dockerfile: vnf/Dockerfile
+    container_name: gw-triagem
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    command: ["bash", "-lc", "SERVER_IP=10.0.100.10 TRIAGEM_NET=10.0.3.0/24 /opt/vnf/gw_triagem.sh && sleep infinity"]
+    networks:
+      triagem_net:
+        ipv4_address: 10.0.3.1
+      hospital_core:
+        ipv4_address: 10.0.100.3
+
+  sensor-uti-1:
+    build:
+      context: .
+      dockerfile: apps/Dockerfile
+    container_name: sensor-uti-1
+    cap_add:
+      - NET_ADMIN
+    command: ["sh", "-c", "ip route replace default via 10.0.1.1 && python3 /app/sensor_medico.py --grupo uti --host 10.0.100.10 --port 9000 --interval 2"]
+    depends_on:
+      - server
+      - gw-uti
+    networks:
+      uti_net:
+        ipv4_address: 10.0.1.11
+
+  sensor-uti-2:
+    build:
+      context: .
+      dockerfile: apps/Dockerfile
+    container_name: sensor-uti-2
+    cap_add:
+      - NET_ADMIN
+    command: ["sh", "-c", "ip route replace default via 10.0.1.1 && python3 /app/sensor_medico.py --grupo uti --host 10.0.100.10 --port 9000 --interval 2"]
+    depends_on:
+      - server
+      - gw-uti
+    networks:
+      uti_net:
+        ipv4_address: 10.0.1.12
+
+  sensor-uti-3:
+    build:
+      context: .
+      dockerfile: apps/Dockerfile
+    container_name: sensor-uti-3
+    cap_add:
+      - NET_ADMIN
+    command: ["sh", "-c", "ip route replace default via 10.0.1.1 && python3 /app/sensor_medico.py --grupo uti --host 10.0.100.10 --port 9000 --interval 2"]
+    depends_on:
+      - server
+      - gw-uti
+    networks:
+      uti_net:
+        ipv4_address: 10.0.1.13
+
+  sensor-enfermaria-1:
+    build:
+      context: .
+      dockerfile: apps/Dockerfile
+    container_name: sensor-enfermaria-1
+    cap_add:
+      - NET_ADMIN
+    command: ["sh", "-c", "ip route replace default via 10.0.2.1 && python3 /app/sensor_medico.py --grupo enfermaria --host 10.0.100.10 --port 9000 --interval 2"]
+    depends_on:
+      - server
+      - gw-enfermaria
+    networks:
+      enfermaria_net:
+        ipv4_address: 10.0.2.11
+
+  sensor-enfermaria-2:
+    build:
+      context: .
+      dockerfile: apps/Dockerfile
+    container_name: sensor-enfermaria-2
+    cap_add:
+      - NET_ADMIN
+    command: ["sh", "-c", "ip route replace default via 10.0.2.1 && python3 /app/sensor_medico.py --grupo enfermaria --host 10.0.100.10 --port 9000 --interval 2"]
+    depends_on:
+      - server
+      - gw-enfermaria
+    networks:
+      enfermaria_net:
+        ipv4_address: 10.0.2.12
+
+  sensor-enfermaria-3:
+    build:
+      context: .
+      dockerfile: apps/Dockerfile
+    container_name: sensor-enfermaria-3
+    cap_add:
+      - NET_ADMIN
+    command: ["sh", "-c", "ip route replace default via 10.0.2.1 && python3 /app/sensor_medico.py --grupo enfermaria --host 10.0.100.10 --port 9000 --interval 2"]
+    depends_on:
+      - server
+      - gw-enfermaria
+    networks:
+      enfermaria_net:
+        ipv4_address: 10.0.2.13
+
+  sensor-triagem-1:
+    build:
+      context: .
+      dockerfile: apps/Dockerfile
+    container_name: sensor-triagem-1
+    cap_add:
+      - NET_ADMIN
+    command: ["sh", "-c", "ip route replace default via 10.0.3.1 && python3 /app/sensor_medico.py --grupo triagem --host 10.0.100.10 --port 9000 --interval 2"]
+    depends_on:
+      - server
+      - gw-triagem
+    networks:
+      triagem_net:
+        ipv4_address: 10.0.3.11
+
+  sensor-triagem-2:
+    build:
+      context: .
+      dockerfile: apps/Dockerfile
+    container_name: sensor-triagem-2
+    cap_add:
+      - NET_ADMIN
+    command: ["sh", "-c", "ip route replace default via 10.0.3.1 && python3 /app/sensor_medico.py --grupo triagem --host 10.0.100.10 --port 9000 --interval 2"]
+    depends_on:
+      - server
+      - gw-triagem
+    networks:
+      triagem_net:
+        ipv4_address: 10.0.3.12
+
+  sensor-triagem-3:
+    build:
+      context: .
+      dockerfile: apps/Dockerfile
+    container_name: sensor-triagem-3
+    cap_add:
+      - NET_ADMIN
+    command: ["sh", "-c", "ip route replace default via 10.0.3.1 && python3 /app/sensor_medico.py --grupo triagem --host 10.0.100.10 --port 9000 --interval 2"]
+    depends_on:
+      - server
+      - gw-triagem
+    networks:
+      triagem_net:
+        ipv4_address: 10.0.3.13
+
+networks:
+  uti_net:
+    ipam:
+      config:
+        - subnet: 10.0.1.0/24
+          gateway: 10.0.1.254
+  enfermaria_net:
+    ipam:
+      config:
+        - subnet: 10.0.2.0/24
+          gateway: 10.0.2.254
+  triagem_net:
+    ipam:
+      config:
+        - subnet: 10.0.3.0/24
+          gateway: 10.0.3.254
+  hospital_core:
+    ipam:
+      config:
+        - subnet: 10.0.100.0/24
+          gateway: 10.0.100.254
