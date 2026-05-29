@@ -55,8 +55,26 @@ O desenvolvimento sera feito em etapas:
 
 ## Proxima Etapa
 
-A proxima subtarefa e implementar as aplicacoes basicas:
+A subtarefa atual implementa as aplicacoes basicas:
 
 - servidor hospitalar central;
 - sensor medico generico;
 - envio de mensagens por grupo: UTI, enfermaria e triagem.
+
+## Executar Subtarefa 2
+
+Em um terminal, iniciar o servidor:
+
+```bash
+python3 apps/servidor_hospitalar.py --host 127.0.0.1 --port 9000
+```
+
+Em outro terminal, enviar leituras simuladas:
+
+```bash
+python3 apps/sensor_medico.py --grupo uti --count 3
+python3 apps/sensor_medico.py --grupo enfermaria --count 3
+python3 apps/sensor_medico.py --grupo triagem --count 3
+```
+
+O servidor deve exibir mensagens recebidas dos tres grupos.
