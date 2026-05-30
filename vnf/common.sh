@@ -12,6 +12,13 @@ LIMIT_RATE="${LIMIT_RATE:-256kbit}"
 LIMIT_BURST="${LIMIT_BURST:-32kbit}"
 LIMIT_LATENCY="${LIMIT_LATENCY:-400ms}"
 
+NETEM_DELAY_MS="${NETEM_DELAY_MS:-0}"
+NETEM_JITTER_MS="${NETEM_JITTER_MS:-0}"
+NETEM_LOSS_PCT="${NETEM_LOSS_PCT:-0}"
+NETEM_DUPLICATE_PCT="${NETEM_DUPLICATE_PCT:-0}"
+NETEM_CORRUPT_PCT="${NETEM_CORRUPT_PCT:-0}"
+NETEM_REORDER_PCT="${NETEM_REORDER_PCT:-0}"
+
 require_command() {
     if ! command -v "$1" >/dev/null 2>&1; then
         echo "Erro: comando '$1' nao encontrado." >&2
@@ -160,4 +167,48 @@ remove_enfermaria_limit() {
     if [ -n "$iface" ]; then
         tc qdisc del dev "$iface" root 2>/dev/null || true
     fi
+}
+
+remove_qdisc_root() {
+    local iface="${1:-$(iface_for_server)}"
+
+    if [ -n "$iface" ]; then
+        tc qdisc del dev "$iface" root 2>/dev/null || true
+    fi
+}
+
+is_nonzero_number() {
+    local value="$1"
+
+    [ -n "$value" ] && [ "$value" != "0" ] && [ "$value" != "0.0" ]
+}
+
+build_netem_args() {
+    local args=()
+
+    if is_nonzero_number "$NETEM_DELAY_MS"; then
+        if is_nonzero_number "$NETEM_JITTER_MS"; then
+            args+=(delay "${NETEM_DELAY_MS}ms" "${NETEM_JITTER_MS}ms" distribution normal)
+        else
+            args+=(delay "${NETEM_DELAY_MS}ms")
+        fi
+    fi
+
+    if is_nonzero_number "$NETEM_LOSS_PCT"; then
+        args+=(loss "${NETEM_LOSS_PCT}%")
+    fi
+
+    if is_nonzero_number "$NETEM_DUPLICATE_PCT"; then
+        args+=(duplicate "${NETEM_DUPLICATE_PCT}%")
+    fi
+
+    if is_nonzero_number "$NETEM_CORRUPT_PCT"; then
+        args+=(corrupt "${NETEM_CORRUPT_PCT}%")
+    fi
+
+    if is_nonzero_number "$NETEM_REORDER_PCT"; then
+        args+=(reorder "${NETEM_REORDER_PCT}%")
+    fi
+
+    echo "${args[@]}"
 }

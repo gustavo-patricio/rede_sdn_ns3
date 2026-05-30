@@ -459,6 +459,93 @@ ovs-ofctl -O OpenFlow13 dump-flows s3
 ovs-ofctl -O OpenFlow13 dump-flows s4
 ```
 
+## Melhorias em Implementacao
+
+Esta secao documenta as melhorias planejadas para dar mais dinamica visual ao
+ambiente quando se interage com a API REST. Hoje o cenario "limitacao" e
+"bloqueio" mexem com `tc tbf` e `iptables`, mas o volume de trafego dos sensores
+(`~150 bytes` a cada `2s`) e ordens de magnitude menor que o teto de `256kbit`
+configurado, entao as metricas nao apresentam variacao perceptivel. As melhorias
+abaixo expoem parametros de degradacao realista de rede e tornam os sensores
+controlaveis em runtime para que cada acao da API gere efeito visivel em
+`avg_delay_ms`, `jitter_ms`, `packet_loss_percent` e `throughput_bps`.
+
+### 1. Emulacao de Rede com `tc netem`
+
+Novos scripts VNF aplicam `tc netem` por gateway, controlados pela API:
+
+| Parametro | Efeito visivel |
+|---|---|
+| `delay_ms` | Aumenta `avg_delay_ms` no grupo afetado. |
+| `jitter_ms` | Reflete em `jitter_ms` (variacao em torno do delay). |
+| `loss_pct` | Aparece em `packet_loss_percent` e em gaps de sequencia. |
+| `duplicate_pct` | Mensagens duplicadas no log do servidor. |
+| `corrupt_pct` | Mensagens descartadas como JSON invalido. |
+| `reorder_pct` | Reordenacao detectavel pelas sequencias por origem. |
+
+Endpoints:
+
+```text
+POST /policies/{group}/netem        (body com os campos acima)
+POST /policies/{group}/netem/clear
+```
+
+### 2. TBF Dinamico
+
+A limitacao de banda passa a aceitar parametros (`rate`, `burst`, `latency`) no
+body, em vez do limite fixo de `256kbit`. Permite varrer de `1Mbit` ate `8kbit`
+para ver o impacto crescente.
+
+Endpoints:
+
+```text
+POST /policies/{group}/limit        (body opcional: rate, burst, latency)
+POST /policies/{group}/limit/clear
+```
+
+A rota antiga `POST /policies/enfermaria/limit` permanece como atalho.
+
+### 3. Sensores Configuraveis em Runtime
+
+Os sensores passam a ler um arquivo de controle (`/tmp/sensor_control.json`)
+a cada ciclo. A API edita esse arquivo via `docker exec`, permitindo:
+
+| Parametro | Efeito |
+|---|---|
+| `interval` | Tempo entre envios em segundos (ex.: `0.2` para gerar rajada). |
+| `payload_padding_bytes` | Bytes extras no payload UDP para inflar o trafego. |
+| `enabled` | `false` pausa o envio sem matar o container. |
+
+Endpoints:
+
+```text
+GET  /sensors/{name}/config
+POST /sensors/{name}/config        (body: interval, payload_padding_bytes, enabled)
+POST /sensors/{name}/start         (docker start)
+POST /sensors/{name}/stop          (docker stop)
+```
+
+### 4. Cenarios Nomeados
+
+Combinacoes pre-definidas de politicas para gerar evidencias e prints
+comparaveis. Cada cenario aplica varias acoes em sequencia.
+
+Cenarios iniciais:
+
+| Cenario | O que faz |
+|---|---|
+| `normal` | Restaura tudo: remove netem, tbf e bloqueios; reseta config dos sensores. |
+| `congestionamento_enfermaria` | Aplica `netem delay=200ms jitter=50ms loss=5%` na enfermaria. |
+| `surto_uti` | Reduz intervalo dos sensores da UTI para `0.2s` e infla payload em `2048` bytes. |
+| `falha_triagem` | Aplica `netem delay=500ms jitter=100ms loss=30%` na triagem. |
+
+Endpoints:
+
+```text
+GET  /scenarios
+POST /scenarios/{name}
+```
+
 ## Proximas Etapas
 
 1. Implementar a simulacao NS-3 para comparar cenario normal e cenario com limitacao.

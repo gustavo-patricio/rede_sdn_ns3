@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shlex
 from collections import defaultdict
 from datetime import datetime
 from typing import Any
@@ -12,7 +14,7 @@ from typing import Any
 import docker
 from docker.errors import DockerException, NotFound
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 PROJECT_NAME = os.getenv("COMPOSE_PROJECT_NAME", "atividad_6")
@@ -33,6 +35,12 @@ SENSORS = {
     ],
     "triagem": ["sensor-triagem-1", "sensor-triagem-2", "sensor-triagem-3"],
 }
+
+ALL_SENSORS = [sensor for group in SENSORS.values() for sensor in group]
+
+SENSOR_GROUP = {sensor: group for group, sensors in SENSORS.items() for sensor in sensors}
+
+SENSOR_CONTROL_FILE = "/tmp/sensor_control.json"
 
 POLICY_ENDPOINTS = {
     "enfermaria_limit": {
@@ -193,6 +201,35 @@ class GroupRoutes(BaseModel):
 class GatewayPolicyStatus(BaseModel):
     bandwidth_limit_active: bool
     triage_block_active: bool
+    network_emulation_active: bool
+
+
+class TbfRequest(BaseModel):
+    rate: str = Field(default="256kbit", description="Taxa maxima, ex.: 256kbit, 1mbit.")
+    burst: str = Field(default="32kbit", description="Burst permitido, ex.: 32kbit.")
+    latency: str = Field(default="400ms", description="Latencia maxima na fila, ex.: 400ms.")
+
+
+class NetemRequest(BaseModel):
+    delay_ms: float = Field(default=0, ge=0, description="Latencia adicional em milissegundos.")
+    jitter_ms: float = Field(default=0, ge=0, description="Variacao da latencia em milissegundos.")
+    loss_pct: float = Field(default=0, ge=0, le=100, description="Percentual de perda de pacotes.")
+    duplicate_pct: float = Field(default=0, ge=0, le=100, description="Percentual de duplicacao.")
+    corrupt_pct: float = Field(default=0, ge=0, le=100, description="Percentual de corrupcao.")
+    reorder_pct: float = Field(default=0, ge=0, le=100, description="Percentual de reordenacao.")
+
+
+class SensorControl(BaseModel):
+    interval: float | None = Field(default=None, gt=0, description="Intervalo em segundos entre envios.")
+    payload_padding_bytes: int | None = Field(default=None, ge=0, description="Bytes extras de padding no payload.")
+    enabled: bool | None = Field(default=None, description="Liga ou desliga o envio sem matar o container.")
+
+
+class SensorControlState(BaseModel):
+    sensor: str
+    group: str | None
+    container_status: str
+    control: dict[str, Any]
 
 
 class GatewayStatus(BaseModel):
@@ -311,6 +348,31 @@ def ensure_group(group: str) -> str:
         allowed = ", ".join(sorted(SENSORS))
         raise HTTPException(status_code=404, detail=f"Grupo invalido. Use: {allowed}")
     return normalized_group
+
+
+def ensure_sensor(sensor: str) -> str:
+    if sensor not in SENSOR_GROUP:
+        allowed = ", ".join(sorted(ALL_SENSORS))
+        raise HTTPException(status_code=404, detail=f"Sensor invalido. Use: {allowed}")
+    return sensor
+
+
+TC_TOKEN_PATTERN = re.compile(r"^[0-9]+(?:\.[0-9]+)?(?:[a-z]+)?$")
+
+
+def ensure_tc_token(name: str, value: str) -> str:
+    if not TC_TOKEN_PATTERN.match(value):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Valor invalido para {name}: '{value}' (esperado ex.: 256kbit, 400ms).",
+        )
+    return value
+
+
+def number_to_str(value: float) -> str:
+    if value == int(value):
+        return str(int(value))
+    return f"{value:g}"
 
 
 def parse_reading_value(value: str) -> float | int | str:
@@ -602,6 +664,7 @@ def gateway_status(group: str) -> GatewayStatus:
                 and "10.0.3.0/24" in iptables_output
                 and "10.0.100.10" in iptables_output
             ),
+            network_emulation_active=bool(tc_output and " netem " in tc_output),
         ),
     )
 
@@ -836,9 +899,299 @@ def unblock_triagem() -> CommandResult:
     return exec_in_container("gw-triagem", ["bash", "-lc", "/opt/vnf/restaurar_politicas.sh"])
 
 
-@app.post("/policies/restore", response_model=dict[str, CommandResult], tags=["politicas"])
-def restore_all() -> dict[str, CommandResult]:
+def apply_tbf(group: str, request: TbfRequest) -> CommandResult:
+    normalized_group = ensure_group(group)
+    rate = ensure_tc_token("rate", request.rate)
+    burst = ensure_tc_token("burst", request.burst)
+    latency = ensure_tc_token("latency", request.latency)
+    env = f"LIMIT_RATE={shlex.quote(rate)} LIMIT_BURST={shlex.quote(burst)} LIMIT_LATENCY={shlex.quote(latency)}"
+    return exec_in_container(
+        GATEWAYS[normalized_group],
+        ["bash", "-lc", f"{env} /opt/vnf/aplicar_tbf.sh"],
+    )
+
+
+def clear_tbf(group: str) -> CommandResult:
+    normalized_group = ensure_group(group)
+    return exec_in_container(
+        GATEWAYS[normalized_group],
+        ["bash", "-lc", "/opt/vnf/remover_tbf.sh"],
+    )
+
+
+def apply_netem(group: str, request: NetemRequest) -> CommandResult:
+    normalized_group = ensure_group(group)
+    has_param = any(
+        getattr(request, field) > 0
+        for field in (
+            "delay_ms",
+            "jitter_ms",
+            "loss_pct",
+            "duplicate_pct",
+            "corrupt_pct",
+            "reorder_pct",
+        )
+    )
+    if not has_param:
+        raise HTTPException(
+            status_code=400,
+            detail="Informe ao menos um parametro netem maior que zero.",
+        )
+
+    env_parts = [
+        f"NETEM_DELAY_MS={number_to_str(request.delay_ms)}",
+        f"NETEM_JITTER_MS={number_to_str(request.jitter_ms)}",
+        f"NETEM_LOSS_PCT={number_to_str(request.loss_pct)}",
+        f"NETEM_DUPLICATE_PCT={number_to_str(request.duplicate_pct)}",
+        f"NETEM_CORRUPT_PCT={number_to_str(request.corrupt_pct)}",
+        f"NETEM_REORDER_PCT={number_to_str(request.reorder_pct)}",
+    ]
+    env = " ".join(env_parts)
+    return exec_in_container(
+        GATEWAYS[normalized_group],
+        ["bash", "-lc", f"{env} /opt/vnf/aplicar_netem.sh"],
+    )
+
+
+def clear_netem(group: str) -> CommandResult:
+    normalized_group = ensure_group(group)
+    return exec_in_container(
+        GATEWAYS[normalized_group],
+        ["bash", "-lc", "/opt/vnf/remover_netem.sh"],
+    )
+
+
+def read_sensor_control(sensor: str) -> dict[str, Any]:
+    output = exec_output_or_none(sensor, ["cat", SENSOR_CONTROL_FILE])
+    if not output:
+        return {}
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_sensor_control(sensor: str, control: dict[str, Any]) -> CommandResult:
+    serialized = json.dumps(control)
+    script = f"cat > {SENSOR_CONTROL_FILE} <<'JSON'\n{serialized}\nJSON"
+    return exec_in_container(sensor, ["bash", "-lc", script])
+
+
+def merge_sensor_control(sensor: str, update: SensorControl) -> dict[str, Any]:
+    current = read_sensor_control(sensor)
+    patch = update.model_dump(exclude_unset=True, exclude_none=True)
+    current.update(patch)
+    write_sensor_control(sensor, current)
+    return current
+
+
+def sensor_container_status(sensor: str) -> str:
+    try:
+        container = get_container(sensor)
+        return container.status
+    except HTTPException:
+        return "missing"
+
+
+@app.post("/policies/{group}/limit", response_model=CommandResult, tags=["politicas"])
+def limit_group(group: str, request: TbfRequest | None = None) -> CommandResult:
+    return apply_tbf(group, request or TbfRequest())
+
+
+@app.post("/policies/{group}/limit/clear", response_model=CommandResult, tags=["politicas"])
+def limit_clear(group: str) -> CommandResult:
+    return clear_tbf(group)
+
+
+@app.post("/policies/{group}/netem", response_model=CommandResult, tags=["politicas"])
+def netem_group(group: str, request: NetemRequest) -> CommandResult:
+    return apply_netem(group, request)
+
+
+@app.post("/policies/{group}/netem/clear", response_model=CommandResult, tags=["politicas"])
+def netem_clear(group: str) -> CommandResult:
+    return clear_netem(group)
+
+
+@app.get("/sensors/{sensor}/config", response_model=SensorControlState, tags=["sensores"])
+def sensor_config(sensor: str) -> SensorControlState:
+    ensure_sensor(sensor)
+    return SensorControlState(
+        sensor=sensor,
+        group=SENSOR_GROUP.get(sensor),
+        container_status=sensor_container_status(sensor),
+        control=read_sensor_control(sensor),
+    )
+
+
+@app.post("/sensors/{sensor}/config", response_model=SensorControlState, tags=["sensores"])
+def sensor_config_update(sensor: str, update: SensorControl) -> SensorControlState:
+    ensure_sensor(sensor)
+    if not update.model_dump(exclude_unset=True, exclude_none=True):
+        raise HTTPException(
+            status_code=400,
+            detail="Informe ao menos um campo: interval, payload_padding_bytes ou enabled.",
+        )
+    merged = merge_sensor_control(sensor, update)
+    return SensorControlState(
+        sensor=sensor,
+        group=SENSOR_GROUP.get(sensor),
+        container_status=sensor_container_status(sensor),
+        control=merged,
+    )
+
+
+@app.post("/sensors/{sensor}/start", tags=["sensores"])
+def sensor_start(sensor: str) -> dict[str, str]:
+    ensure_sensor(sensor)
+    container = get_container(sensor)
+    container.start()
+    container.reload()
+    return {"sensor": sensor, "status": container.status}
+
+
+@app.post("/sensors/{sensor}/stop", tags=["sensores"])
+def sensor_stop(sensor: str) -> dict[str, str]:
+    ensure_sensor(sensor)
+    container = get_container(sensor)
+    container.stop(timeout=5)
+    container.reload()
+    return {"sensor": sensor, "status": container.status}
+
+
+SCENARIOS: dict[str, dict[str, Any]] = {
+    "normal": {
+        "description": "Restaura todas as politicas e a configuracao dinamica dos sensores.",
+        "actions": [
+            {"type": "clear_netem", "group": "uti"},
+            {"type": "clear_netem", "group": "enfermaria"},
+            {"type": "clear_netem", "group": "triagem"},
+            {"type": "restore_all_policies"},
+            {"type": "reset_all_sensors"},
+        ],
+    },
+    "congestionamento_enfermaria": {
+        "description": "Aplica latencia e perda na enfermaria para simular congestionamento.",
+        "actions": [
+            {
+                "type": "netem",
+                "group": "enfermaria",
+                "params": {"delay_ms": 200, "jitter_ms": 50, "loss_pct": 5},
+            },
+        ],
+    },
+    "surto_uti": {
+        "description": "Acelera o envio dos sensores da UTI e infla o payload para gerar rajada.",
+        "actions": [
+            {
+                "type": "sensor_config",
+                "sensor": "sensor-uti-1",
+                "params": {"interval": 0.2, "payload_padding_bytes": 2048},
+            },
+            {
+                "type": "sensor_config",
+                "sensor": "sensor-uti-2",
+                "params": {"interval": 0.2, "payload_padding_bytes": 2048},
+            },
+            {
+                "type": "sensor_config",
+                "sensor": "sensor-uti-3",
+                "params": {"interval": 0.2, "payload_padding_bytes": 2048},
+            },
+        ],
+    },
+    "falha_triagem": {
+        "description": "Degrada severamente a triagem (delay 500ms, jitter 100ms, perda 30%).",
+        "actions": [
+            {
+                "type": "netem",
+                "group": "triagem",
+                "params": {"delay_ms": 500, "jitter_ms": 100, "loss_pct": 30},
+            },
+        ],
+    },
+}
+
+
+def reset_all_sensors() -> list[dict[str, Any]]:
+    results = []
+    default_control = {"interval": 2.0, "payload_padding_bytes": 0, "enabled": True}
+    for sensor in ALL_SENSORS:
+        try:
+            write_sensor_control(sensor, default_control)
+            results.append({"sensor": sensor, "control": default_control, "ok": True})
+        except HTTPException as exc:
+            results.append({"sensor": sensor, "ok": False, "error": exc.detail})
+    return results
+
+
+def restore_all_policies_results() -> dict[str, CommandResult]:
     return {
         "enfermaria": restore_enfermaria(),
         "triagem": unblock_triagem(),
     }
+
+
+def execute_scenario_action(action: dict[str, Any]) -> dict[str, Any]:
+    action_type = action.get("type")
+
+    if action_type == "netem":
+        group = action["group"]
+        params = action.get("params", {})
+        result = apply_netem(group, NetemRequest(**params))
+        return {"type": action_type, "group": group, "params": params, "result": result.model_dump()}
+
+    if action_type == "clear_netem":
+        group = action["group"]
+        result = clear_netem(group)
+        return {"type": action_type, "group": group, "result": result.model_dump()}
+
+    if action_type == "tbf":
+        group = action["group"]
+        params = action.get("params", {})
+        result = apply_tbf(group, TbfRequest(**params))
+        return {"type": action_type, "group": group, "params": params, "result": result.model_dump()}
+
+    if action_type == "sensor_config":
+        sensor = ensure_sensor(action["sensor"])
+        params = action.get("params", {})
+        merged = merge_sensor_control(sensor, SensorControl(**params))
+        return {"type": action_type, "sensor": sensor, "params": params, "control": merged}
+
+    if action_type == "restore_all_policies":
+        result = restore_all_policies_results()
+        return {"type": action_type, "result": {k: v.model_dump() for k, v in result.items()}}
+
+    if action_type == "reset_all_sensors":
+        return {"type": action_type, "results": reset_all_sensors()}
+
+    raise HTTPException(status_code=500, detail=f"Tipo de acao desconhecido: {action_type}")
+
+
+@app.get("/scenarios", tags=["cenarios"])
+def list_scenarios() -> dict[str, dict[str, Any]]:
+    return {
+        name: {"description": data["description"], "actions": data["actions"]}
+        for name, data in SCENARIOS.items()
+    }
+
+
+@app.post("/scenarios/{name}", tags=["cenarios"])
+def apply_scenario(name: str) -> dict[str, Any]:
+    if name not in SCENARIOS:
+        allowed = ", ".join(sorted(SCENARIOS))
+        raise HTTPException(status_code=404, detail=f"Cenario invalido. Use: {allowed}")
+
+    scenario = SCENARIOS[name]
+    executed = [execute_scenario_action(action) for action in scenario["actions"]]
+    return {
+        "scenario": name,
+        "description": scenario["description"],
+        "actions_executed": executed,
+    }
+
+
+@app.post("/policies/restore", response_model=dict[str, CommandResult], tags=["politicas"])
+def restore_all() -> dict[str, CommandResult]:
+    return restore_all_policies_results()
