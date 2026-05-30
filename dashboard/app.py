@@ -70,6 +70,18 @@ class TrafficMetrics(BaseModel):
     groups: dict[str, GroupMetrics]
 
 
+class GroupInfo(BaseModel):
+    group: str
+    gateway: str
+    sensors: list[str]
+
+
+class GroupRoutes(BaseModel):
+    group: str
+    gateway: CommandResult
+    sensors: dict[str, CommandResult]
+
+
 app = FastAPI(
     title="API SDN/NFV - Rede Hospitalar IoMT",
     description="API local para diagnosticar containers e aplicar politicas VNF.",
@@ -133,6 +145,14 @@ def ensure_gateway(gateway: str) -> str:
     return GATEWAYS[gateway]
 
 
+def ensure_group(group: str) -> str:
+    normalized_group = group.lower()
+    if normalized_group not in SENSORS:
+        allowed = ", ".join(sorted(SENSORS))
+        raise HTTPException(status_code=404, detail=f"Grupo invalido. Use: {allowed}")
+    return normalized_group
+
+
 def parse_server_logs(tail: int) -> tuple[list[dict[str, Any]], int]:
     container = get_container("server")
     raw_logs = container.logs(tail=tail).decode("utf-8", errors="replace")
@@ -166,6 +186,14 @@ def parse_server_logs(tail: int) -> tuple[list[dict[str, Any]], int]:
         )
 
     return samples, ignored
+
+
+def server_log_lines_by_group(group: str, tail: int) -> list[str]:
+    normalized_group = ensure_group(group).upper()
+    container = get_container("server")
+    raw_logs = container.logs(tail=tail).decode("utf-8", errors="replace")
+    marker = f"grupo={normalized_group} "
+    return [line for line in raw_logs.splitlines() if marker in line]
 
 
 def calculate_group_metrics(group: str, samples: list[dict[str, Any]]) -> GroupMetrics:
@@ -229,13 +257,13 @@ def calculate_traffic_metrics(tail: int) -> TrafficMetrics:
     )
 
 
-@app.get("/health")
+@app.get("/health", tags=["sistema"])
 def health() -> dict[str, str]:
     docker_client().ping()
     return {"status": "ok", "docker": "ok"}
 
 
-@app.get("/containers")
+@app.get("/containers", tags=["sistema"])
 def containers() -> list[dict[str, Any]]:
     return sorted(
         [container_summary(container) for container in compose_containers()],
@@ -243,7 +271,7 @@ def containers() -> list[dict[str, Any]]:
     )
 
 
-@app.get("/status")
+@app.get("/status", tags=["sistema"])
 def status() -> dict[str, Any]:
     containers_by_name = {container.name: container for container in compose_containers()}
     expected = ["controller", "dashboard", "server", *GATEWAYS.values()]
@@ -262,19 +290,19 @@ def status() -> dict[str, Any]:
     }
 
 
-@app.get("/logs/{container_name}")
+@app.get("/logs/{container_name}", tags=["logs"])
 def logs(container_name: str, tail: int = Query(default=80, ge=1, le=500)) -> dict[str, str]:
     container = get_container(container_name)
     output = container.logs(tail=tail).decode("utf-8", errors="replace")
     return {"container": container_name, "logs": output}
 
 
-@app.get("/metrics/traffic", response_model=TrafficMetrics)
+@app.get("/metrics/traffic", response_model=TrafficMetrics, tags=["metricas"])
 def traffic_metrics(tail: int = Query(default=1000, ge=10, le=5000)) -> TrafficMetrics:
     return calculate_traffic_metrics(tail)
 
 
-@app.get("/metrics/traffic/{group}", response_model=GroupMetrics)
+@app.get("/metrics/traffic/{group}", response_model=GroupMetrics, tags=["metricas"])
 def traffic_metrics_by_group(
     group: str,
     tail: int = Query(default=1000, ge=10, le=5000),
@@ -286,40 +314,118 @@ def traffic_metrics_by_group(
     return metrics.groups[normalized_group]
 
 
-@app.get("/sensors")
+@app.get("/groups", response_model=list[GroupInfo], tags=["grupos"])
+def groups() -> list[GroupInfo]:
+    return [
+        GroupInfo(group=group, gateway=GATEWAYS[group], sensors=sensors)
+        for group, sensors in SENSORS.items()
+    ]
+
+
+@app.get("/groups/{group}", response_model=GroupInfo, tags=["grupos"])
+def group_info(group: str) -> GroupInfo:
+    normalized_group = ensure_group(group)
+    return GroupInfo(
+        group=normalized_group,
+        gateway=GATEWAYS[normalized_group],
+        sensors=SENSORS[normalized_group],
+    )
+
+
+@app.get("/groups/{group}/sensors", tags=["grupos"])
+def group_sensors(group: str) -> dict[str, list[str]]:
+    normalized_group = ensure_group(group)
+    return {"group": normalized_group, "sensors": SENSORS[normalized_group]}
+
+
+@app.get("/groups/{group}/gateway", tags=["grupos"])
+def group_gateway(group: str) -> dict[str, str]:
+    normalized_group = ensure_group(group)
+    return {"group": normalized_group, "gateway": GATEWAYS[normalized_group]}
+
+
+@app.get("/groups/{group}/gateway/iptables", tags=["grupos"])
+def group_gateway_iptables(group: str) -> CommandResult:
+    normalized_group = ensure_group(group)
+    return gateway_iptables(normalized_group)
+
+
+@app.get("/groups/{group}/gateway/tc", tags=["grupos"])
+def group_gateway_tc(group: str) -> CommandResult:
+    normalized_group = ensure_group(group)
+    return gateway_tc(normalized_group)
+
+
+@app.get("/groups/{group}/gateway/interfaces", tags=["grupos"])
+def group_gateway_interfaces(group: str) -> CommandResult:
+    normalized_group = ensure_group(group)
+    return gateway_interfaces(normalized_group)
+
+
+@app.get("/groups/{group}/routes", response_model=GroupRoutes, tags=["grupos"])
+def group_routes(group: str) -> GroupRoutes:
+    normalized_group = ensure_group(group)
+    gateway = exec_in_container(GATEWAYS[normalized_group], ["ip", "route"])
+    sensor_routes = {
+        sensor: exec_in_container(sensor, ["ip", "route"])
+        for sensor in SENSORS[normalized_group]
+    }
+    return GroupRoutes(group=normalized_group, gateway=gateway, sensors=sensor_routes)
+
+
+@app.get("/groups/{group}/logs", tags=["grupos"])
+def group_logs(group: str, tail: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
+    normalized_group = ensure_group(group)
+    return {
+        "group": normalized_group,
+        "source": "server",
+        "logs": server_log_lines_by_group(normalized_group, tail),
+    }
+
+
+@app.get("/groups/{group}/metrics", response_model=GroupMetrics, tags=["grupos"])
+def group_metrics(
+    group: str,
+    tail: int = Query(default=1000, ge=10, le=5000),
+) -> GroupMetrics:
+    normalized_group = ensure_group(group)
+    return traffic_metrics_by_group(normalized_group, tail)
+
+
+@app.get("/sensors", tags=["compatibilidade"])
 def sensors() -> dict[str, list[str]]:
     return SENSORS
 
 
-@app.get("/gateways")
+@app.get("/gateways", tags=["compatibilidade"])
 def gateways() -> dict[str, str]:
     return GATEWAYS
 
 
-@app.get("/gateways/{gateway}/iptables")
+@app.get("/gateways/{gateway}/iptables", tags=["compatibilidade"])
 def gateway_iptables(gateway: str) -> CommandResult:
     container_name = ensure_gateway(gateway)
     return exec_in_container(container_name, ["iptables", "-L", "FORWARD", "-v", "-n"])
 
 
-@app.get("/gateways/{gateway}/tc")
+@app.get("/gateways/{gateway}/tc", tags=["compatibilidade"])
 def gateway_tc(gateway: str) -> CommandResult:
     container_name = ensure_gateway(gateway)
     return exec_in_container(container_name, ["tc", "qdisc", "show", "dev", "eth1"])
 
 
-@app.get("/gateways/{gateway}/interfaces")
+@app.get("/gateways/{gateway}/interfaces", tags=["compatibilidade"])
 def gateway_interfaces(gateway: str) -> CommandResult:
     container_name = ensure_gateway(gateway)
     return exec_in_container(container_name, ["ip", "-br", "addr"])
 
 
-@app.get("/routes/{container_name}")
+@app.get("/routes/{container_name}", tags=["compatibilidade"])
 def routes(container_name: str) -> CommandResult:
     return exec_in_container(container_name, ["ip", "route"])
 
 
-@app.post("/policies/enfermaria/limit")
+@app.post("/policies/enfermaria/limit", tags=["politicas"])
 def limit_enfermaria() -> CommandResult:
     return exec_in_container(
         "gw-enfermaria",
@@ -327,7 +433,7 @@ def limit_enfermaria() -> CommandResult:
     )
 
 
-@app.post("/policies/enfermaria/restore")
+@app.post("/policies/enfermaria/restore", tags=["politicas"])
 def restore_enfermaria() -> CommandResult:
     return exec_in_container(
         "gw-enfermaria",
@@ -335,17 +441,17 @@ def restore_enfermaria() -> CommandResult:
     )
 
 
-@app.post("/policies/triagem/block")
+@app.post("/policies/triagem/block", tags=["politicas"])
 def block_triagem() -> CommandResult:
     return exec_in_container("gw-triagem", ["bash", "-lc", "/opt/vnf/bloquear_triagem.sh"])
 
 
-@app.post("/policies/triagem/unblock")
+@app.post("/policies/triagem/unblock", tags=["politicas"])
 def unblock_triagem() -> CommandResult:
     return exec_in_container("gw-triagem", ["bash", "-lc", "/opt/vnf/restaurar_politicas.sh"])
 
 
-@app.post("/policies/restore")
+@app.post("/policies/restore", tags=["politicas"])
 def restore_all() -> dict[str, CommandResult]:
     return {
         "enfermaria": restore_enfermaria(),

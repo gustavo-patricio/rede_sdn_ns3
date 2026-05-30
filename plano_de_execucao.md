@@ -66,6 +66,7 @@ Entregas:
 - API em FastAPI;
 - endpoints para status, containers, logs, rotas e gateways;
 - endpoints para metricas de trafego por grupo;
+- rotas agrupadas em `/groups/{group}/...` para `uti`, `enfermaria` e `triagem`;
 - endpoints para limitar enfermaria, bloquear triagem e restaurar politicas;
 - documentacao interativa automatica em `/docs`.
 

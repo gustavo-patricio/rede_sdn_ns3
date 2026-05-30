@@ -240,6 +240,18 @@ GET  /containers
 GET  /logs/server
 GET  /metrics/traffic
 GET  /metrics/traffic/{group}
+
+GET  /groups
+GET  /groups/{group}
+GET  /groups/{group}/sensors
+GET  /groups/{group}/gateway
+GET  /groups/{group}/gateway/iptables
+GET  /groups/{group}/gateway/tc
+GET  /groups/{group}/gateway/interfaces
+GET  /groups/{group}/routes
+GET  /groups/{group}/logs
+GET  /groups/{group}/metrics
+
 GET  /sensors
 GET  /gateways
 GET  /gateways/{gateway}/iptables
@@ -261,10 +273,27 @@ curl http://localhost:8000/status
 curl http://localhost:8000/logs/server
 curl http://localhost:8000/metrics/traffic
 curl http://localhost:8000/metrics/traffic/enfermaria
+
+curl http://localhost:8000/groups
+curl http://localhost:8000/groups/uti/metrics
+curl http://localhost:8000/groups/enfermaria/gateway/tc
+curl http://localhost:8000/groups/triagem/gateway/iptables
+curl http://localhost:8000/groups/triagem/logs
+
 curl -X POST http://localhost:8000/policies/enfermaria/limit
 curl -X POST http://localhost:8000/policies/triagem/block
 curl -X POST http://localhost:8000/policies/restore
 ```
+
+Grupos validos:
+
+```text
+uti
+enfermaria
+triagem
+```
+
+As rotas antigas `GET /sensors`, `GET /gateways`, `GET /routes/{container_name}` e `GET /metrics/traffic/{group}` continuam disponiveis por compatibilidade, mas a organizacao recomendada para consultas por setor e `GET /groups/{group}/...`.
 
 As metricas de trafego sao calculadas a partir dos logs do servidor hospitalar:
 
