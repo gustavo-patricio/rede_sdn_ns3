@@ -8,7 +8,8 @@ source "$SCRIPT_DIR/common.sh"
 
 require_command tc
 
-remove_enfermaria_limit
+WAN_IFACE="$(iface_for_server)"
+remove_enfermaria_limit "$WAN_IFACE"
 tc qdisc add dev "$WAN_IFACE" root tbf \
     rate "$LIMIT_RATE" \
     burst "$LIMIT_BURST" \

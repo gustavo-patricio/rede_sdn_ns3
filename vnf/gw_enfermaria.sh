@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/common.sh"
 require_command iptables
 
 enable_forwarding
+ensure_udp_forward_to_server "$ENFERMARIA_NET"
 ensure_log_rule "$ENFERMARIA_NET" "GW_ENFERMARIA_TRAFEGO: "
 ensure_forward_accept "$ENFERMARIA_NET"
 

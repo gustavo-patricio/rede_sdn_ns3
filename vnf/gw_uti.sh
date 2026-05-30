@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/common.sh"
 require_command iptables
 
 enable_forwarding
+ensure_udp_forward_to_server "$UTI_NET"
 ensure_log_rule "$UTI_NET" "GW_UTI_TRAFEGO: "
 ensure_forward_accept "$UTI_NET"
 
