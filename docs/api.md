@@ -79,6 +79,65 @@ Usado por metricas de trafego de um grupo.
 }
 ```
 
+### SensorMetrics
+
+Usado por metricas calculadas por sensor a partir dos logs do servidor.
+
+```json
+{
+  "group": "uti",
+  "sensor": "sensor-cardiaco",
+  "origins": ["10.0.1.11:45612"],
+  "messages": 30,
+  "bytes": 4380,
+  "duration_seconds": 58.0,
+  "messages_per_second": 0.517,
+  "throughput_bps": 604.138,
+  "avg_payload_bytes": 146.0,
+  "avg_delay_ms": 0.431,
+  "min_delay_ms": 0.289,
+  "max_delay_ms": 0.813,
+  "jitter_ms": 0.102,
+  "expected_messages": 30,
+  "missing_messages": 0,
+  "packet_loss_percent": 0.0,
+  "first_seen": "2026-05-30T14:05:10",
+  "last_seen": "2026-05-30T14:06:08",
+  "last_sequence": 90,
+  "last_reading": {
+    "batimento_bpm": 88
+  },
+  "reading_stats": {
+    "batimento_bpm": {
+      "samples": 30,
+      "min": 72,
+      "max": 97,
+      "avg": 84.633,
+      "last": 88
+    }
+  }
+}
+```
+
+### SensorMetricsCollection
+
+Usado por `GET /sensors/metrics`.
+
+```json
+{
+  "source": "server logs tail=1000",
+  "parsed_lines": 117,
+  "ignored_lines": 1,
+  "groups": {
+    "uti": {
+      "sensor-cardiaco": {}
+    },
+    "enfermaria": {},
+    "triagem": {}
+  }
+}
+```
+
 ### GatewayStatus
 
 Usado por `GET /gateways`.
@@ -617,6 +676,89 @@ GET /metrics/traffic/uti
 Body: nenhum.
 
 Response: `GroupMetrics`.
+
+### GET /sensors/metrics
+
+Retorna metricas por sensor, agrupadas por grupo, sem alterar os endpoints de metricas ja existentes.
+
+Query params:
+
+| Parametro | Tipo | Obrigatorio | Padrao | Limite |
+|---|---|---:|---:|---|
+| `tail` | integer | nao | `1000` | `10` a `5000` |
+
+Request:
+
+```http
+GET /sensors/metrics?tail=1000
+```
+
+Body: nenhum.
+
+Response: `SensorMetricsCollection`.
+
+### GET /groups/{group}/sensors/metrics
+
+Retorna metricas por sensor de um grupo especifico.
+
+Path params:
+
+| Parametro | Tipo | Obrigatorio | Valores |
+|---|---|---:|---|
+| `group` | string | sim | `uti`, `enfermaria`, `triagem` |
+
+Query params:
+
+| Parametro | Tipo | Obrigatorio | Padrao | Limite |
+|---|---|---:|---:|---|
+| `tail` | integer | nao | `1000` | `10` a `5000` |
+
+Request:
+
+```http
+GET /groups/uti/sensors/metrics?tail=1000
+```
+
+Body: nenhum.
+
+Response:
+
+```json
+{
+  "sensor-cardiaco": {},
+  "sensor-oxigenacao": {},
+  "sensor-pressao": {}
+}
+```
+
+Cada valor do objeto segue o modelo `SensorMetrics`.
+
+### GET /groups/{group}/sensors/{sensor}/metrics
+
+Retorna metricas de um sensor especifico dentro de um grupo. O parametro `sensor` usa o nome registrado no log do servidor, como `sensor-cardiaco`, `sensor-oxigenacao`, `sensor-temperatura` ou `sensor-triagem`.
+
+Path params:
+
+| Parametro | Tipo | Obrigatorio | Exemplo |
+|---|---|---:|---|
+| `group` | string | sim | `uti` |
+| `sensor` | string | sim | `sensor-cardiaco` |
+
+Query params:
+
+| Parametro | Tipo | Obrigatorio | Padrao | Limite |
+|---|---|---:|---:|---|
+| `tail` | integer | nao | `1000` | `10` a `5000` |
+
+Request:
+
+```http
+GET /groups/uti/sensors/sensor-cardiaco/metrics?tail=1000
+```
+
+Body: nenhum.
+
+Response: `SensorMetrics`.
 
 ## Politicas
 

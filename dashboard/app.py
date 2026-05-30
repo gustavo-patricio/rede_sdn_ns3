@@ -131,6 +131,45 @@ class GroupMetrics(BaseModel):
     packet_loss_percent: float
 
 
+class ReadingFieldStats(BaseModel):
+    samples: int
+    min: float | int | None
+    max: float | int | None
+    avg: float | None
+    last: float | int | str | None
+
+
+class SensorMetrics(BaseModel):
+    group: str
+    sensor: str
+    origins: list[str]
+    messages: int
+    bytes: int
+    duration_seconds: float
+    messages_per_second: float
+    throughput_bps: float
+    avg_payload_bytes: float
+    avg_delay_ms: float | None
+    min_delay_ms: float | None
+    max_delay_ms: float | None
+    jitter_ms: float | None
+    expected_messages: int
+    missing_messages: int
+    packet_loss_percent: float
+    first_seen: str | None
+    last_seen: str | None
+    last_sequence: int | None
+    last_reading: dict[str, float | int | str]
+    reading_stats: dict[str, ReadingFieldStats]
+
+
+class SensorMetricsCollection(BaseModel):
+    source: str
+    parsed_lines: int
+    ignored_lines: int
+    groups: dict[str, dict[str, SensorMetrics]]
+
+
 class TrafficMetrics(BaseModel):
     source: str
     parsed_lines: int
@@ -264,6 +303,28 @@ def ensure_group(group: str) -> str:
     return normalized_group
 
 
+def parse_reading_value(value: str) -> float | int | str:
+    try:
+        return int(value)
+    except ValueError:
+        pass
+
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def parse_reading_fields(text: str) -> dict[str, float | int | str]:
+    fields = {}
+    for token in text.split():
+        if "=" not in token:
+            continue
+        key, value = token.split("=", 1)
+        fields[key] = parse_reading_value(value)
+    return fields
+
+
 def parse_server_logs(tail: int) -> tuple[list[dict[str, Any]], int]:
     container = get_container("server")
     raw_logs = container.logs(tail=tail).decode("utf-8", errors="replace")
@@ -284,6 +345,7 @@ def parse_server_logs(tail: int) -> tuple[list[dict[str, Any]], int]:
 
         payload_bytes = match.group("bytes")
         delay_ms = match.group("delay_ms")
+        reading = parse_reading_fields(line[match.end():].strip())
         samples.append(
             {
                 "timestamp": timestamp,
@@ -293,6 +355,7 @@ def parse_server_logs(tail: int) -> tuple[list[dict[str, Any]], int]:
                 "origin": match.group("origin"),
                 "bytes": int(payload_bytes) if payload_bytes else len(line.encode("utf-8")),
                 "delay_ms": float(delay_ms) if delay_ms else None,
+                "reading": reading,
             }
         )
 
@@ -348,6 +411,130 @@ def calculate_group_metrics(group: str, samples: list[dict[str, Any]]) -> GroupM
         expected_messages=expected,
         missing_messages=missing,
         packet_loss_percent=round(packet_loss, 3),
+    )
+
+
+def estimate_missing_sensor_messages(samples: list[dict[str, Any]]) -> tuple[int, int]:
+    sequences_by_origin: dict[str, list[int]] = defaultdict(list)
+    for item in samples:
+        sequences_by_origin[item["origin"]].append(item["sequence"])
+
+    expected = 0
+    missing = 0
+    for sequences in sequences_by_origin.values():
+        ordered_sequences = sorted(set(sequences))
+        if not ordered_sequences:
+            continue
+        if len(ordered_sequences) == 1:
+            expected += 1
+            continue
+
+        gaps = [
+            current - previous
+            for previous, current in zip(ordered_sequences, ordered_sequences[1:])
+            if current > previous
+        ]
+        step = min(gaps) if gaps else 1
+        origin_expected = ((ordered_sequences[-1] - ordered_sequences[0]) // step) + 1
+        expected += origin_expected
+        missing += max(origin_expected - len(ordered_sequences), 0)
+
+    return expected, missing
+
+
+def calculate_reading_stats(samples: list[dict[str, Any]]) -> dict[str, ReadingFieldStats]:
+    values_by_field: dict[str, list[float | int | str]] = defaultdict(list)
+    for item in samples:
+        for key, value in item["reading"].items():
+            values_by_field[key].append(value)
+
+    stats = {}
+    for key, values in sorted(values_by_field.items()):
+        numeric_values = [value for value in values if isinstance(value, int | float)]
+        if numeric_values:
+            stats[key] = ReadingFieldStats(
+                samples=len(values),
+                min=min(numeric_values),
+                max=max(numeric_values),
+                avg=round(sum(numeric_values) / len(numeric_values), 3),
+                last=values[-1],
+            )
+        else:
+            stats[key] = ReadingFieldStats(
+                samples=len(values),
+                min=None,
+                max=None,
+                avg=None,
+                last=values[-1],
+            )
+    return stats
+
+
+def calculate_sensor_metrics(
+    group: str,
+    sensor: str,
+    samples: list[dict[str, Any]],
+) -> SensorMetrics:
+    ordered = sorted(samples, key=lambda item: item["timestamp"])
+    duration = 0.0
+    if len(ordered) > 1:
+        duration = (ordered[-1]["timestamp"] - ordered[0]["timestamp"]).total_seconds()
+    duration_for_rate = max(duration, 1.0)
+
+    total_bytes = sum(item["bytes"] for item in ordered)
+    delays = [item["delay_ms"] for item in ordered if item["delay_ms"] is not None]
+    jitter_values = [
+        abs(current - previous)
+        for previous, current in zip(delays, delays[1:])
+    ]
+    expected, missing = estimate_missing_sensor_messages(ordered)
+    packet_loss = (missing / expected * 100) if expected else 0.0
+
+    return SensorMetrics(
+        group=group,
+        sensor=sensor,
+        origins=sorted({item["origin"] for item in ordered}),
+        messages=len(ordered),
+        bytes=total_bytes,
+        duration_seconds=round(duration, 3),
+        messages_per_second=round(len(ordered) / duration_for_rate, 3),
+        throughput_bps=round((total_bytes * 8) / duration_for_rate, 3),
+        avg_payload_bytes=round(total_bytes / len(ordered), 3) if ordered else 0.0,
+        avg_delay_ms=round(sum(delays) / len(delays), 3) if delays else None,
+        min_delay_ms=round(min(delays), 3) if delays else None,
+        max_delay_ms=round(max(delays), 3) if delays else None,
+        jitter_ms=round(sum(jitter_values) / len(jitter_values), 3) if jitter_values else None,
+        expected_messages=expected,
+        missing_messages=missing,
+        packet_loss_percent=round(packet_loss, 3),
+        first_seen=ordered[0]["timestamp"].isoformat() if ordered else None,
+        last_seen=ordered[-1]["timestamp"].isoformat() if ordered else None,
+        last_sequence=ordered[-1]["sequence"] if ordered else None,
+        last_reading=ordered[-1]["reading"] if ordered else {},
+        reading_stats=calculate_reading_stats(ordered),
+    )
+
+
+def calculate_sensor_metrics_collection(tail: int) -> SensorMetricsCollection:
+    samples, ignored = parse_server_logs(tail)
+    samples_by_group_sensor: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for sample in samples:
+        samples_by_group_sensor[sample["group"]][sample["sensor"]].append(sample)
+
+    groups = {}
+    for group, sensors in sorted(samples_by_group_sensor.items()):
+        groups[group] = {
+            sensor: calculate_sensor_metrics(group, sensor, sensor_samples)
+            for sensor, sensor_samples in sorted(sensors.items())
+        }
+
+    return SensorMetricsCollection(
+        source=f"server logs tail={tail}",
+        parsed_lines=len(samples),
+        ignored_lines=ignored,
+        groups=groups,
     )
 
 
@@ -466,6 +653,11 @@ def traffic_metrics_by_group(
     return metrics.groups[normalized_group]
 
 
+@app.get("/sensors/metrics", response_model=SensorMetricsCollection, tags=["metricas"])
+def sensor_metrics(tail: int = Query(default=1000, ge=10, le=5000)) -> SensorMetricsCollection:
+    return calculate_sensor_metrics_collection(tail)
+
+
 @app.get("/groups", response_model=list[GroupInfo], tags=["grupos"])
 def groups() -> list[GroupInfo]:
     return [
@@ -488,6 +680,38 @@ def group_info(group: str) -> GroupInfo:
 def group_sensors(group: str) -> dict[str, list[str]]:
     normalized_group = ensure_group(group)
     return {"group": normalized_group, "sensors": SENSORS[normalized_group]}
+
+
+@app.get("/groups/{group}/sensors/metrics", response_model=dict[str, SensorMetrics], tags=["grupos"])
+def group_sensor_metrics(
+    group: str,
+    tail: int = Query(default=1000, ge=10, le=5000),
+) -> dict[str, SensorMetrics]:
+    normalized_group = ensure_group(group)
+    metrics = calculate_sensor_metrics_collection(tail)
+    if normalized_group not in metrics.groups:
+        raise HTTPException(status_code=404, detail=f"Grupo sem metricas: {group}")
+    return metrics.groups[normalized_group]
+
+
+@app.get(
+    "/groups/{group}/sensors/{sensor}/metrics",
+    response_model=SensorMetrics,
+    tags=["grupos"],
+)
+def single_sensor_metrics(
+    group: str,
+    sensor: str,
+    tail: int = Query(default=1000, ge=10, le=5000),
+) -> SensorMetrics:
+    normalized_group = ensure_group(group)
+    metrics = calculate_sensor_metrics_collection(tail)
+    group_metrics = metrics.groups.get(normalized_group)
+    if not group_metrics:
+        raise HTTPException(status_code=404, detail=f"Grupo sem metricas: {group}")
+    if sensor not in group_metrics:
+        raise HTTPException(status_code=404, detail=f"Sensor sem metricas: {sensor}")
+    return group_metrics[sensor]
 
 
 @app.get("/groups/{group}/gateway", tags=["grupos"])

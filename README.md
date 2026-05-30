@@ -161,6 +161,8 @@ Grupos:
 GET /groups
 GET /groups/{group}
 GET /groups/{group}/sensors
+GET /groups/{group}/sensors/metrics
+GET /groups/{group}/sensors/{sensor}/metrics
 GET /groups/{group}/gateway
 GET /groups/{group}/gateway/iptables
 GET /groups/{group}/gateway/tc
@@ -184,6 +186,7 @@ Metricas:
 ```text
 GET /metrics/traffic
 GET /metrics/traffic/{group}
+GET /sensors/metrics
 ```
 
 Politicas:
@@ -222,6 +225,18 @@ Consultar metricas da UTI:
 
 ```bash
 curl http://localhost:8000/groups/uti/metrics
+```
+
+Consultar metricas por sensor da UTI:
+
+```bash
+curl http://localhost:8000/groups/uti/sensors/metrics
+```
+
+Consultar metricas de um sensor especifico:
+
+```bash
+curl http://localhost:8000/groups/uti/sensors/sensor-cardiaco/metrics
 ```
 
 Consultar status detalhado dos gateways:
@@ -339,6 +354,27 @@ Principais campos:
 | `avg_delay_ms` | Atraso medio calculado pelo timestamp do sensor. |
 | `jitter_ms` | Variacao media entre atrasos consecutivos. |
 | `packet_loss_percent` | Perda estimada por lacunas na sequencia por origem. |
+
+Metricas por sensor:
+
+```text
+GET /sensors/metrics
+GET /groups/{group}/sensors/metrics
+GET /groups/{group}/sensors/{sensor}/metrics
+```
+
+Esses endpoints usam os logs do servidor e nao alteram os contratos antigos. Eles retornam campos como:
+
+| Campo | Descricao |
+|---|---|
+| `sensor` | Nome do sensor registrado no log, como `sensor-cardiaco`. |
+| `origins` | Origens IP:porta que enviaram leituras daquele sensor. |
+| `avg_payload_bytes` | Tamanho medio das mensagens do sensor. |
+| `min_delay_ms` | Menor atraso observado. |
+| `max_delay_ms` | Maior atraso observado. |
+| `last_sequence` | Ultima sequencia recebida para o sensor. |
+| `last_reading` | Ultima leitura clinica registrada. |
+| `reading_stats` | Minimo, maximo, media e ultimo valor por campo numerico da leitura. |
 
 ## Diagnostico Manual nos Containers
 
