@@ -20,7 +20,7 @@ Implementar e validar um ambiente integrado contendo:
 - tres gateways VNF;
 - sensores medicos simulados;
 - servidor hospitalar central;
-- painel web simples para politicas e visualizacao;
+- API REST para politicas, visualizacao e diagnostico;
 - simulacao NS-3 com comparacao entre cenario normal e cenario limitado.
 
 ## Estrutura do Repositorio
@@ -29,7 +29,7 @@ Implementar e validar um ambiente integrado contendo:
 .
 ├── apps/                 # Sensores simulados e servidor hospitalar
 ├── controller/           # Controlador SDN Ryu
-├── dashboard/            # Painel web e API
+├── dashboard/            # API REST FastAPI para operacao e diagnostico
 ├── evidencias/           # Prints, logs e saidas usadas no relatorio
 ├── ns3/                  # Codigo e resultados da simulacao NS-3
 ├── relatorio/            # Relatorio tecnico
@@ -48,7 +48,7 @@ O desenvolvimento sera feito em etapas:
 3. Gateways VNF.
 4. Ambiente SDN.
 5. Docker Compose.
-6. Painel web.
+6. API REST de operacao e diagnostico.
 7. Simulacao NS-3.
 8. Evidencias.
 9. Relatorio tecnico.
@@ -62,6 +62,7 @@ Subtarefas implementadas ate agora:
 - scripts VNF para gateways e politicas;
 - controlador Ryu e topologia Mininet inicial.
 - Docker Compose com controlador, servidor, sensores e gateways.
+- API REST FastAPI para diagnostico e politicas.
 
 ## Executar Subtarefa 2
 
@@ -219,4 +220,44 @@ Encerrar ambiente:
 
 ```bash
 docker compose down
+```
+
+## Executar Subtarefa 6
+
+A API REST fica disponivel em:
+
+```text
+http://localhost:8000
+http://localhost:8000/docs
+```
+
+Endpoints principais:
+
+```text
+GET  /health
+GET  /status
+GET  /containers
+GET  /logs/server
+GET  /sensors
+GET  /gateways
+GET  /gateways/{gateway}/iptables
+GET  /gateways/{gateway}/tc
+GET  /gateways/{gateway}/interfaces
+GET  /routes/{container_name}
+
+POST /policies/enfermaria/limit
+POST /policies/enfermaria/restore
+POST /policies/triagem/block
+POST /policies/triagem/unblock
+POST /policies/restore
+```
+
+Exemplos com `curl`:
+
+```bash
+curl http://localhost:8000/status
+curl http://localhost:8000/logs/server
+curl -X POST http://localhost:8000/policies/enfermaria/limit
+curl -X POST http://localhost:8000/policies/triagem/block
+curl -X POST http://localhost:8000/policies/restore
 ```

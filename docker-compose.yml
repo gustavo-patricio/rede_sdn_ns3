@@ -11,6 +11,27 @@ services:
       hospital_core:
         ipv4_address: 10.0.100.20
 
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: dashboard
+    environment:
+      COMPOSE_PROJECT_NAME: atividad_6
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - controller
+      - server
+      - gw-uti
+      - gw-enfermaria
+      - gw-triagem
+    networks:
+      hospital_core:
+        ipv4_address: 10.0.100.30
+
   server:
     build:
       context: .

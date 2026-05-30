@@ -60,16 +60,18 @@ Criterio de conclusao:
 - `docker compose up -d` sobe o ambiente;
 - `docker compose ps` mostra servicos ativos.
 
-## Subtarefa 6 - Painel web
+## Subtarefa 6 - API REST de operacao e diagnostico
 
 Entregas:
-- API simples em Flask ou FastAPI;
-- pagina HTML para status e politicas;
-- botoes para limitar enfermaria, bloquear triagem e restaurar politicas.
+- API em FastAPI;
+- endpoints para status, containers, logs, rotas e gateways;
+- endpoints para limitar enfermaria, bloquear triagem e restaurar politicas;
+- documentacao interativa automatica em `/docs`.
 
 Criterio de conclusao:
-- painel abre no navegador;
-- acoes do painel executam os scripts de politica.
+- API responde em `http://localhost:8000`;
+- `/docs` abre a documentacao interativa;
+- endpoints executam os scripts de politica nos gateways.
 
 ## Subtarefa 7 - Simulacao NS-3
 
