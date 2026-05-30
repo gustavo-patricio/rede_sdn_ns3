@@ -231,6 +231,12 @@ http://localhost:8000
 http://localhost:8000/docs
 ```
 
+Contrato detalhado dos endpoints para integracao com frontend:
+
+```text
+docs/api.md
+```
+
 Endpoints principais:
 
 ```text
