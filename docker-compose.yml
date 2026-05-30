@@ -109,7 +109,7 @@ services:
     container_name: sensor-uti-1
     cap_add:
       - NET_ADMIN
-    command: ["sh", "-c", "ip route replace default via 10.0.1.1 && python3 /app/sensor_medico.py --grupo uti --host 10.0.100.10 --port 9000 --interval 2"]
+    command: ["sh", "-c", "ip route replace default via 10.0.1.1 && python3 /app/sensor_medico.py --grupo uti --host 10.0.1.1 --port 9000 --interval 2"]
     depends_on:
       - server
       - gw-uti
@@ -124,7 +124,7 @@ services:
     container_name: sensor-uti-2
     cap_add:
       - NET_ADMIN
-    command: ["sh", "-c", "ip route replace default via 10.0.1.1 && python3 /app/sensor_medico.py --grupo uti --host 10.0.100.10 --port 9000 --interval 2"]
+    command: ["sh", "-c", "ip route replace default via 10.0.1.1 && python3 /app/sensor_medico.py --grupo uti --host 10.0.1.1 --port 9000 --interval 2"]
     depends_on:
       - server
       - gw-uti
@@ -139,7 +139,7 @@ services:
     container_name: sensor-uti-3
     cap_add:
       - NET_ADMIN
-    command: ["sh", "-c", "ip route replace default via 10.0.1.1 && python3 /app/sensor_medico.py --grupo uti --host 10.0.100.10 --port 9000 --interval 2"]
+    command: ["sh", "-c", "ip route replace default via 10.0.1.1 && python3 /app/sensor_medico.py --grupo uti --host 10.0.1.1 --port 9000 --interval 2"]
     depends_on:
       - server
       - gw-uti
@@ -154,7 +154,7 @@ services:
     container_name: sensor-enfermaria-1
     cap_add:
       - NET_ADMIN
-    command: ["sh", "-c", "ip route replace default via 10.0.2.1 && python3 /app/sensor_medico.py --grupo enfermaria --host 10.0.100.10 --port 9000 --interval 2"]
+    command: ["sh", "-c", "ip route replace default via 10.0.2.1 && python3 /app/sensor_medico.py --grupo enfermaria --host 10.0.2.1 --port 9000 --interval 2"]
     depends_on:
       - server
       - gw-enfermaria
@@ -169,7 +169,7 @@ services:
     container_name: sensor-enfermaria-2
     cap_add:
       - NET_ADMIN
-    command: ["sh", "-c", "ip route replace default via 10.0.2.1 && python3 /app/sensor_medico.py --grupo enfermaria --host 10.0.100.10 --port 9000 --interval 2"]
+    command: ["sh", "-c", "ip route replace default via 10.0.2.1 && python3 /app/sensor_medico.py --grupo enfermaria --host 10.0.2.1 --port 9000 --interval 2"]
     depends_on:
       - server
       - gw-enfermaria
@@ -184,7 +184,7 @@ services:
     container_name: sensor-enfermaria-3
     cap_add:
       - NET_ADMIN
-    command: ["sh", "-c", "ip route replace default via 10.0.2.1 && python3 /app/sensor_medico.py --grupo enfermaria --host 10.0.100.10 --port 9000 --interval 2"]
+    command: ["sh", "-c", "ip route replace default via 10.0.2.1 && python3 /app/sensor_medico.py --grupo enfermaria --host 10.0.2.1 --port 9000 --interval 2"]
     depends_on:
       - server
       - gw-enfermaria
@@ -199,7 +199,7 @@ services:
     container_name: sensor-triagem-1
     cap_add:
       - NET_ADMIN
-    command: ["sh", "-c", "ip route replace default via 10.0.3.1 && python3 /app/sensor_medico.py --grupo triagem --host 10.0.100.10 --port 9000 --interval 2"]
+    command: ["sh", "-c", "ip route replace default via 10.0.3.1 && python3 /app/sensor_medico.py --grupo triagem --host 10.0.3.1 --port 9000 --interval 2"]
     depends_on:
       - server
       - gw-triagem
@@ -214,7 +214,7 @@ services:
     container_name: sensor-triagem-2
     cap_add:
       - NET_ADMIN
-    command: ["sh", "-c", "ip route replace default via 10.0.3.1 && python3 /app/sensor_medico.py --grupo triagem --host 10.0.100.10 --port 9000 --interval 2"]
+    command: ["sh", "-c", "ip route replace default via 10.0.3.1 && python3 /app/sensor_medico.py --grupo triagem --host 10.0.3.1 --port 9000 --interval 2"]
     depends_on:
       - server
       - gw-triagem
@@ -229,7 +229,7 @@ services:
     container_name: sensor-triagem-3
     cap_add:
       - NET_ADMIN
-    command: ["sh", "-c", "ip route replace default via 10.0.3.1 && python3 /app/sensor_medico.py --grupo triagem --host 10.0.100.10 --port 9000 --interval 2"]
+    command: ["sh", "-c", "ip route replace default via 10.0.3.1 && python3 /app/sensor_medico.py --grupo triagem --host 10.0.3.1 --port 9000 --interval 2"]
     depends_on:
       - server
       - gw-triagem

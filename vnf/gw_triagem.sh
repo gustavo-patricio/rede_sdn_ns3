@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/common.sh"
 require_command iptables
 
 enable_forwarding
+ensure_udp_forward_to_server "$TRIAGEM_NET"
 ensure_log_rule "$TRIAGEM_NET" "GW_TRIAGEM_TRAFEGO: "
 ensure_forward_accept "$TRIAGEM_NET"
 

@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 
 PROJECT_NAME = os.getenv("COMPOSE_PROJECT_NAME", "atividad_6")
+SERVER_IP = os.getenv("SERVER_IP", "10.0.100.10")
 
 GATEWAYS = {
     "uti": "gw-uti",
@@ -286,6 +287,15 @@ def exec_output_or_none(container_name: str, command: list[str]) -> str | None:
     if result.exit_code != 0:
         return None
     return result.output
+
+
+def tc_server_iface_command() -> list[str]:
+    route_iface_script = (
+        f"iface=$(ip -o route get {SERVER_IP} | "
+        "awk '{for (i = 1; i <= NF; i++) if ($i == \"dev\") {print $(i + 1); exit}}'); "
+        'tc qdisc show dev "$iface"'
+    )
+    return ["bash", "-lc", route_iface_script]
 
 
 def ensure_gateway(gateway: str) -> str:
@@ -571,7 +581,7 @@ def gateway_status(group: str) -> GatewayStatus:
 
     interfaces = exec_output_or_none(container_name, ["ip", "-br", "addr"])
     ip_forward_output = exec_output_or_none(container_name, ["cat", "/proc/sys/net/ipv4/ip_forward"])
-    tc_output = exec_output_or_none(container_name, ["tc", "qdisc", "show", "dev", "eth1"])
+    tc_output = exec_output_or_none(container_name, tc_server_iface_command())
     iptables_output = exec_output_or_none(container_name, ["iptables", "-L", "FORWARD", "-v", "-n"])
 
     return GatewayStatus(
@@ -787,7 +797,7 @@ def gateway_iptables(gateway: str) -> CommandResult:
 @app.get("/gateways/{gateway}/tc", tags=["compatibilidade"])
 def gateway_tc(gateway: str) -> CommandResult:
     container_name = ensure_gateway(gateway)
-    return exec_in_container(container_name, ["tc", "qdisc", "show", "dev", "eth1"])
+    return exec_in_container(container_name, tc_server_iface_command())
 
 
 @app.get("/gateways/{gateway}/interfaces", tags=["compatibilidade"])
@@ -810,7 +820,7 @@ def policies() -> dict[str, PolicyEndpoint]:
 def limit_enfermaria() -> CommandResult:
     return exec_in_container(
         "gw-enfermaria",
-        ["bash", "-lc", "WAN_IFACE=eth1 /opt/vnf/limitar_enfermaria.sh"],
+        ["bash", "-lc", "/opt/vnf/limitar_enfermaria.sh"],
     )
 
 
@@ -818,7 +828,7 @@ def limit_enfermaria() -> CommandResult:
 def restore_enfermaria() -> CommandResult:
     return exec_in_container(
         "gw-enfermaria",
-        ["bash", "-lc", "WAN_IFACE=eth1 /opt/vnf/restaurar_politicas.sh"],
+        ["bash", "-lc", "/opt/vnf/restaurar_politicas.sh"],
     )
 
 
