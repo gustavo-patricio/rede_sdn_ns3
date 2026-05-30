@@ -265,6 +265,7 @@ GET  /gateways/{gateway}/tc
 GET  /gateways/{gateway}/interfaces
 GET  /routes/{container_name}
 
+GET  /policies
 POST /policies/enfermaria/limit
 POST /policies/enfermaria/restore
 POST /policies/triagem/block
@@ -285,6 +286,8 @@ curl http://localhost:8000/groups/uti/metrics
 curl http://localhost:8000/groups/enfermaria/gateway/tc
 curl http://localhost:8000/groups/triagem/gateway/iptables
 curl http://localhost:8000/groups/triagem/logs
+curl http://localhost:8000/gateways
+curl http://localhost:8000/policies
 
 curl -X POST http://localhost:8000/policies/enfermaria/limit
 curl -X POST http://localhost:8000/policies/triagem/block
@@ -299,7 +302,7 @@ enfermaria
 triagem
 ```
 
-As rotas antigas `GET /sensors`, `GET /gateways`, `GET /routes/{container_name}` e `GET /metrics/traffic/{group}` continuam disponiveis por compatibilidade, mas a organizacao recomendada para consultas por setor e `GET /groups/{group}/...`.
+`GET /gateways` retorna um resumo detalhado do status dos gateways. `GET /policies` expoe o contrato das politicas disponiveis, incluindo metodo, rota, necessidade de body e endpoint recomendado para conferir o status. As rotas antigas `GET /sensors`, `GET /routes/{container_name}` e `GET /metrics/traffic/{group}` continuam disponiveis por compatibilidade, mas a organizacao recomendada para consultas por setor e `GET /groups/{group}/...`.
 
 As metricas de trafego sao calculadas a partir dos logs do servidor hospitalar:
 

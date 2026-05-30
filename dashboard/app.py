@@ -33,6 +33,74 @@ SENSORS = {
     "triagem": ["sensor-triagem-1", "sensor-triagem-2", "sensor-triagem-3"],
 }
 
+POLICY_ENDPOINTS = {
+    "enfermaria_limit": {
+        "key": "enfermaria_limit",
+        "method": "POST",
+        "path": "/policies/enfermaria/limit",
+        "group": "enfermaria",
+        "action": "limit",
+        "description": "Aplica limitacao de banda no gateway da enfermaria.",
+        "request_body_required": False,
+        "request_body_schema": None,
+        "request_example": None,
+        "response_model": "CommandResult",
+        "status_endpoint": "/gateways",
+    },
+    "enfermaria_restore": {
+        "key": "enfermaria_restore",
+        "method": "POST",
+        "path": "/policies/enfermaria/restore",
+        "group": "enfermaria",
+        "action": "restore",
+        "description": "Remove a limitacao de banda do gateway da enfermaria.",
+        "request_body_required": False,
+        "request_body_schema": None,
+        "request_example": None,
+        "response_model": "CommandResult",
+        "status_endpoint": "/gateways",
+    },
+    "triagem_block": {
+        "key": "triagem_block",
+        "method": "POST",
+        "path": "/policies/triagem/block",
+        "group": "triagem",
+        "action": "block",
+        "description": "Bloqueia o trafego da triagem para o servidor hospitalar.",
+        "request_body_required": False,
+        "request_body_schema": None,
+        "request_example": None,
+        "response_model": "CommandResult",
+        "status_endpoint": "/gateways",
+    },
+    "triagem_unblock": {
+        "key": "triagem_unblock",
+        "method": "POST",
+        "path": "/policies/triagem/unblock",
+        "group": "triagem",
+        "action": "unblock",
+        "description": "Remove o bloqueio do trafego da triagem.",
+        "request_body_required": False,
+        "request_body_schema": None,
+        "request_example": None,
+        "response_model": "CommandResult",
+        "status_endpoint": "/gateways",
+    },
+    "restore_all": {
+        "key": "restore_all",
+        "method": "POST",
+        "path": "/policies/restore",
+        "group": None,
+        "action": "restore_all",
+        "description": "Restaura todas as politicas dinamicas aplicadas pela API.",
+        "request_body_required": False,
+        "request_body_schema": None,
+        "request_example": None,
+        "response_model": "dict[str, CommandResult]",
+        "status_endpoint": "/gateways",
+    },
+}
+
 SERVER_LOG_PATTERN = re.compile(
     r"^\[(?P<timestamp>[^\]]+)\] \[HOSPITAL\] "
     r"grupo=(?P<group>\S+) sensor=(?P<sensor>\S+) seq=(?P<sequence>\d+) "
@@ -80,6 +148,38 @@ class GroupRoutes(BaseModel):
     group: str
     gateway: CommandResult
     sensors: dict[str, CommandResult]
+
+
+class GatewayPolicyStatus(BaseModel):
+    bandwidth_limit_active: bool
+    triage_block_active: bool
+
+
+class GatewayStatus(BaseModel):
+    group: str
+    container: str
+    docker_status: str
+    running: bool
+    image: str | None
+    id: str | None
+    ip_forward: str | None
+    interfaces: str | None
+    tc_eth1: str | None
+    policies: GatewayPolicyStatus
+
+
+class PolicyEndpoint(BaseModel):
+    key: str
+    method: str
+    path: str
+    group: str | None
+    action: str
+    description: str
+    request_body_required: bool
+    request_body_schema: dict[str, Any] | None
+    request_example: dict[str, Any] | None
+    response_model: str
+    status_endpoint: str
 
 
 app = FastAPI(
@@ -136,6 +236,17 @@ def exec_in_container(container_name: str, command: list[str]) -> CommandResult:
         exit_code=result.exit_code,
         output=output,
     )
+
+
+def exec_output_or_none(container_name: str, command: list[str]) -> str | None:
+    try:
+        result = exec_in_container(container_name, command)
+    except HTTPException:
+        return None
+
+    if result.exit_code != 0:
+        return None
+    return result.output
 
 
 def ensure_gateway(gateway: str) -> str:
@@ -254,6 +365,47 @@ def calculate_traffic_metrics(tail: int) -> TrafficMetrics:
             group: calculate_group_metrics(group, group_samples)
             for group, group_samples in sorted(samples_by_group.items())
         },
+    )
+
+
+def gateway_status(group: str) -> GatewayStatus:
+    normalized_group = ensure_group(group)
+    container_name = GATEWAYS[normalized_group]
+
+    try:
+        container = get_container(container_name)
+        docker_status = container.status
+        image = container.image.tags[0] if container.image.tags else container.image.short_id
+        container_id = container.short_id
+    except HTTPException:
+        docker_status = "missing"
+        image = None
+        container_id = None
+
+    interfaces = exec_output_or_none(container_name, ["ip", "-br", "addr"])
+    ip_forward_output = exec_output_or_none(container_name, ["cat", "/proc/sys/net/ipv4/ip_forward"])
+    tc_output = exec_output_or_none(container_name, ["tc", "qdisc", "show", "dev", "eth1"])
+    iptables_output = exec_output_or_none(container_name, ["iptables", "-L", "FORWARD", "-v", "-n"])
+
+    return GatewayStatus(
+        group=normalized_group,
+        container=container_name,
+        docker_status=docker_status,
+        running=docker_status == "running",
+        image=image,
+        id=container_id,
+        ip_forward=ip_forward_output.strip() if ip_forward_output else None,
+        interfaces=interfaces,
+        tc_eth1=tc_output,
+        policies=GatewayPolicyStatus(
+            bandwidth_limit_active=bool(tc_output and " tbf " in tc_output),
+            triage_block_active=bool(
+                iptables_output
+                and "DROP" in iptables_output
+                and "10.0.3.0/24" in iptables_output
+                and "10.0.100.10" in iptables_output
+            ),
+        ),
     )
 
 
@@ -397,9 +549,9 @@ def sensors() -> dict[str, list[str]]:
     return SENSORS
 
 
-@app.get("/gateways", tags=["compatibilidade"])
-def gateways() -> dict[str, str]:
-    return GATEWAYS
+@app.get("/gateways", response_model=dict[str, GatewayStatus], tags=["gateways"])
+def gateways() -> dict[str, GatewayStatus]:
+    return {group: gateway_status(group) for group in GATEWAYS}
 
 
 @app.get("/gateways/{gateway}/iptables", tags=["compatibilidade"])
@@ -425,7 +577,12 @@ def routes(container_name: str) -> CommandResult:
     return exec_in_container(container_name, ["ip", "route"])
 
 
-@app.post("/policies/enfermaria/limit", tags=["politicas"])
+@app.get("/policies", response_model=dict[str, PolicyEndpoint], tags=["politicas"])
+def policies() -> dict[str, PolicyEndpoint]:
+    return {key: PolicyEndpoint(**value) for key, value in POLICY_ENDPOINTS.items()}
+
+
+@app.post("/policies/enfermaria/limit", response_model=CommandResult, tags=["politicas"])
 def limit_enfermaria() -> CommandResult:
     return exec_in_container(
         "gw-enfermaria",
@@ -433,7 +590,7 @@ def limit_enfermaria() -> CommandResult:
     )
 
 
-@app.post("/policies/enfermaria/restore", tags=["politicas"])
+@app.post("/policies/enfermaria/restore", response_model=CommandResult, tags=["politicas"])
 def restore_enfermaria() -> CommandResult:
     return exec_in_container(
         "gw-enfermaria",
@@ -441,17 +598,17 @@ def restore_enfermaria() -> CommandResult:
     )
 
 
-@app.post("/policies/triagem/block", tags=["politicas"])
+@app.post("/policies/triagem/block", response_model=CommandResult, tags=["politicas"])
 def block_triagem() -> CommandResult:
     return exec_in_container("gw-triagem", ["bash", "-lc", "/opt/vnf/bloquear_triagem.sh"])
 
 
-@app.post("/policies/triagem/unblock", tags=["politicas"])
+@app.post("/policies/triagem/unblock", response_model=CommandResult, tags=["politicas"])
 def unblock_triagem() -> CommandResult:
     return exec_in_container("gw-triagem", ["bash", "-lc", "/opt/vnf/restaurar_politicas.sh"])
 
 
-@app.post("/policies/restore", tags=["politicas"])
+@app.post("/policies/restore", response_model=dict[str, CommandResult], tags=["politicas"])
 def restore_all() -> dict[str, CommandResult]:
     return {
         "enfermaria": restore_enfermaria(),

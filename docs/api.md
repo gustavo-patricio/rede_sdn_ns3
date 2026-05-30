@@ -79,6 +79,48 @@ Usado por metricas de trafego de um grupo.
 }
 ```
 
+### GatewayStatus
+
+Usado por `GET /gateways`.
+
+```json
+{
+  "group": "enfermaria",
+  "container": "gw-enfermaria",
+  "docker_status": "running",
+  "running": true,
+  "image": "atividad_6-gw-enfermaria:latest",
+  "id": "18dc4007211e",
+  "ip_forward": "1",
+  "interfaces": "lo UNKNOWN 127.0.0.1/8 ::1/128\neth0@if66 UP 10.0.2.1/24\neth1@if70 UP 10.0.100.2/24\n",
+  "tc_eth1": "qdisc noqueue 0: root refcnt 2 \n",
+  "policies": {
+    "bandwidth_limit_active": false,
+    "triage_block_active": false
+  }
+}
+```
+
+### PolicyEndpoint
+
+Usado por `GET /policies` para o frontend descobrir quais acoes de politica existem e como chama-las.
+
+```json
+{
+  "key": "enfermaria_limit",
+  "method": "POST",
+  "path": "/policies/enfermaria/limit",
+  "group": "enfermaria",
+  "action": "limit",
+  "description": "Aplica limitacao de banda no gateway da enfermaria.",
+  "request_body_required": false,
+  "request_body_schema": null,
+  "request_example": null,
+  "response_model": "CommandResult",
+  "status_endpoint": "/gateways"
+}
+```
+
 ### TrafficMetrics
 
 Usado por metricas agregadas de todos os grupos.
@@ -426,6 +468,120 @@ Body: nenhum.
 
 Response: `GroupMetrics`.
 
+## Gateways
+
+### GET /gateways
+
+Retorna status detalhado dos gateways por grupo.
+
+Request:
+
+```http
+GET /gateways
+```
+
+Body: nenhum.
+
+Response:
+
+```json
+{
+  "uti": {
+    "group": "uti",
+    "container": "gw-uti",
+    "docker_status": "running",
+    "running": true,
+    "image": "atividad_6-gw-uti:latest",
+    "id": "8e18a03efd0c",
+    "ip_forward": "1",
+    "interfaces": "lo UNKNOWN 127.0.0.1/8 ::1/128\neth0@if66 UP 10.0.1.1/24\neth1@if70 UP 10.0.100.1/24\n",
+    "tc_eth1": "qdisc noqueue 0: root refcnt 2 \n",
+    "policies": {
+      "bandwidth_limit_active": false,
+      "triage_block_active": false
+    }
+  },
+  "enfermaria": {
+    "group": "enfermaria",
+    "container": "gw-enfermaria",
+    "docker_status": "running",
+    "running": true,
+    "image": "atividad_6-gw-enfermaria:latest",
+    "id": "18dc4007211e",
+    "ip_forward": "1",
+    "interfaces": "lo UNKNOWN 127.0.0.1/8 ::1/128\neth0@if66 UP 10.0.2.1/24\neth1@if70 UP 10.0.100.2/24\n",
+    "tc_eth1": "qdisc tbf 8001: root refcnt 9 rate 256Kbit burst 4Kb lat 400ms \n",
+    "policies": {
+      "bandwidth_limit_active": true,
+      "triage_block_active": false
+    }
+  },
+  "triagem": {
+    "group": "triagem",
+    "container": "gw-triagem",
+    "docker_status": "running",
+    "running": true,
+    "image": "atividad_6-gw-triagem:latest",
+    "id": "d69dcd44d47f",
+    "ip_forward": "1",
+    "interfaces": "lo UNKNOWN 127.0.0.1/8 ::1/128\neth0@if66 UP 10.0.3.1/24\neth1@if70 UP 10.0.100.3/24\n",
+    "tc_eth1": "qdisc noqueue 0: root refcnt 2 \n",
+    "policies": {
+      "bandwidth_limit_active": false,
+      "triage_block_active": true
+    }
+  }
+}
+```
+
+Campos principais:
+
+| Campo | Descricao |
+|---|---|
+| `docker_status` | Estado bruto do container no Docker, como `running` ou `exited`. |
+| `running` | Booleano derivado de `docker_status == "running"`. |
+| `ip_forward` | Valor de `/proc/sys/net/ipv4/ip_forward` dentro do gateway. |
+| `interfaces` | Saida de `ip -br addr` dentro do gateway. |
+| `tc_eth1` | Saida de `tc qdisc show dev eth1`. |
+| `policies.bandwidth_limit_active` | `true` quando ha qdisc `tbf` ativo no gateway. |
+| `policies.triage_block_active` | `true` quando ha regra `DROP` para `10.0.3.0/24 -> 10.0.100.10`. |
+
+### GET /gateways/{gateway}/iptables
+
+Retorna regras `iptables` de um gateway.
+
+Path params:
+
+| Parametro | Tipo | Obrigatorio | Valores |
+|---|---|---:|---|
+| `gateway` | string | sim | `uti`, `enfermaria`, `triagem` |
+
+Response: `CommandResult`.
+
+### GET /gateways/{gateway}/tc
+
+Retorna regras `tc qdisc` de um gateway.
+
+Path params:
+
+| Parametro | Tipo | Obrigatorio | Valores |
+|---|---|---:|---|
+| `gateway` | string | sim | `uti`, `enfermaria`, `triagem` |
+
+Response: `CommandResult`.
+
+### GET /gateways/{gateway}/interfaces
+
+Retorna interfaces de um gateway.
+
+Path params:
+
+| Parametro | Tipo | Obrigatorio | Valores |
+|---|---|---:|---|
+| `gateway` | string | sim | `uti`, `enfermaria`, `triagem` |
+
+Response: `CommandResult`.
+
 ## Metricas Agregadas
 
 ### GET /metrics/traffic
@@ -463,6 +619,107 @@ Body: nenhum.
 Response: `GroupMetrics`.
 
 ## Politicas
+
+As politicas atuais sao acoes fixas. Os endpoints `POST` nao exigem body; o cliente pode enviar a requisicao sem payload.
+
+Para integrar o frontend, use `GET /policies` para listar quais acoes existem, qual rota chamar e se alguma delas exige corpo de requisicao.
+
+### GET /policies
+
+Lista os endpoints de politica disponiveis e o contrato de envio de cada um.
+
+Request:
+
+```http
+GET /policies
+```
+
+Body: nenhum.
+
+Response:
+
+```json
+{
+  "enfermaria_limit": {
+    "key": "enfermaria_limit",
+    "method": "POST",
+    "path": "/policies/enfermaria/limit",
+    "group": "enfermaria",
+    "action": "limit",
+    "description": "Aplica limitacao de banda no gateway da enfermaria.",
+    "request_body_required": false,
+    "request_body_schema": null,
+    "request_example": null,
+    "response_model": "CommandResult",
+    "status_endpoint": "/gateways"
+  },
+  "enfermaria_restore": {
+    "key": "enfermaria_restore",
+    "method": "POST",
+    "path": "/policies/enfermaria/restore",
+    "group": "enfermaria",
+    "action": "restore",
+    "description": "Remove a limitacao de banda do gateway da enfermaria.",
+    "request_body_required": false,
+    "request_body_schema": null,
+    "request_example": null,
+    "response_model": "CommandResult",
+    "status_endpoint": "/gateways"
+  },
+  "triagem_block": {
+    "key": "triagem_block",
+    "method": "POST",
+    "path": "/policies/triagem/block",
+    "group": "triagem",
+    "action": "block",
+    "description": "Bloqueia o trafego da triagem para o servidor hospitalar.",
+    "request_body_required": false,
+    "request_body_schema": null,
+    "request_example": null,
+    "response_model": "CommandResult",
+    "status_endpoint": "/gateways"
+  },
+  "triagem_unblock": {
+    "key": "triagem_unblock",
+    "method": "POST",
+    "path": "/policies/triagem/unblock",
+    "group": "triagem",
+    "action": "unblock",
+    "description": "Remove o bloqueio do trafego da triagem.",
+    "request_body_required": false,
+    "request_body_schema": null,
+    "request_example": null,
+    "response_model": "CommandResult",
+    "status_endpoint": "/gateways"
+  },
+  "restore_all": {
+    "key": "restore_all",
+    "method": "POST",
+    "path": "/policies/restore",
+    "group": null,
+    "action": "restore_all",
+    "description": "Restaura todas as politicas dinamicas aplicadas pela API.",
+    "request_body_required": false,
+    "request_body_schema": null,
+    "request_example": null,
+    "response_model": "dict[str, CommandResult]",
+    "status_endpoint": "/gateways"
+  }
+}
+```
+
+Campos principais:
+
+| Campo | Descricao |
+|---|---|
+| `method` | Metodo HTTP que o frontend deve usar. |
+| `path` | Rota que deve ser chamada para executar a politica. |
+| `group` | Grupo afetado pela politica. Quando for `null`, a politica afeta mais de um grupo. |
+| `request_body_required` | Indica se a rota exige corpo na requisicao. Atualmente todas retornam `false`. |
+| `request_body_schema` | Estrutura esperada no body. Atualmente `null` porque as politicas sao fixas. |
+| `request_example` | Exemplo de payload. Atualmente `null` porque nao ha payload. |
+| `response_model` | Tipo de resposta esperado. |
+| `status_endpoint` | Endpoint recomendado para conferir se a politica ficou ativa. |
 
 ### POST /policies/enfermaria/limit
 
