@@ -65,12 +65,14 @@ Criterio de conclusao:
 Entregas:
 - API em FastAPI;
 - endpoints para status, containers, logs, rotas e gateways;
+- endpoints para metricas de trafego por grupo;
 - endpoints para limitar enfermaria, bloquear triagem e restaurar politicas;
 - documentacao interativa automatica em `/docs`.
 
 Criterio de conclusao:
 - API responde em `http://localhost:8000`;
 - `/docs` abre a documentacao interativa;
+- `/metrics/traffic` retorna throughput, delay, jitter e perda estimada;
 - endpoints executam os scripts de politica nos gateways.
 
 ## Subtarefa 7 - Simulacao NS-3

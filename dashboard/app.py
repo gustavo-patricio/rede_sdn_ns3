@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import os
+import re
+from collections import defaultdict
+from datetime import datetime
 from typing import Any
 
 import docker
@@ -30,12 +33,41 @@ SENSORS = {
     "triagem": ["sensor-triagem-1", "sensor-triagem-2", "sensor-triagem-3"],
 }
 
+SERVER_LOG_PATTERN = re.compile(
+    r"^\[(?P<timestamp>[^\]]+)\] \[HOSPITAL\] "
+    r"grupo=(?P<group>\S+) sensor=(?P<sensor>\S+) seq=(?P<sequence>\d+) "
+    r"origem=(?P<origin>\S+)"
+    r"(?: bytes=(?P<bytes>\d+))?"
+    r"(?: delay_ms=(?P<delay_ms>[0-9.]+))?"
+)
+
 
 class CommandResult(BaseModel):
     container: str
     command: list[str]
     exit_code: int
     output: str
+
+
+class GroupMetrics(BaseModel):
+    group: str
+    messages: int
+    bytes: int
+    duration_seconds: float
+    messages_per_second: float
+    throughput_bps: float
+    avg_delay_ms: float | None
+    jitter_ms: float | None
+    expected_messages: int
+    missing_messages: int
+    packet_loss_percent: float
+
+
+class TrafficMetrics(BaseModel):
+    source: str
+    parsed_lines: int
+    ignored_lines: int
+    groups: dict[str, GroupMetrics]
 
 
 app = FastAPI(
@@ -101,6 +133,102 @@ def ensure_gateway(gateway: str) -> str:
     return GATEWAYS[gateway]
 
 
+def parse_server_logs(tail: int) -> tuple[list[dict[str, Any]], int]:
+    container = get_container("server")
+    raw_logs = container.logs(tail=tail).decode("utf-8", errors="replace")
+    samples = []
+    ignored = 0
+
+    for line in raw_logs.splitlines():
+        match = SERVER_LOG_PATTERN.search(line)
+        if not match:
+            ignored += 1
+            continue
+
+        try:
+            timestamp = datetime.strptime(match.group("timestamp"), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            ignored += 1
+            continue
+
+        payload_bytes = match.group("bytes")
+        delay_ms = match.group("delay_ms")
+        samples.append(
+            {
+                "timestamp": timestamp,
+                "group": match.group("group").lower(),
+                "sensor": match.group("sensor"),
+                "sequence": int(match.group("sequence")),
+                "origin": match.group("origin"),
+                "bytes": int(payload_bytes) if payload_bytes else len(line.encode("utf-8")),
+                "delay_ms": float(delay_ms) if delay_ms else None,
+            }
+        )
+
+    return samples, ignored
+
+
+def calculate_group_metrics(group: str, samples: list[dict[str, Any]]) -> GroupMetrics:
+    ordered = sorted(samples, key=lambda item: item["timestamp"])
+    duration = 0.0
+    if len(ordered) > 1:
+        duration = (ordered[-1]["timestamp"] - ordered[0]["timestamp"]).total_seconds()
+    duration_for_rate = max(duration, 1.0)
+
+    total_bytes = sum(item["bytes"] for item in ordered)
+    delays = [item["delay_ms"] for item in ordered if item["delay_ms"] is not None]
+    jitter_values = [
+        abs(current - previous)
+        for previous, current in zip(delays, delays[1:])
+    ]
+
+    sequences_by_origin: dict[str, set[int]] = defaultdict(set)
+    for item in ordered:
+        sequences_by_origin[item["origin"]].add(item["sequence"])
+
+    expected = 0
+    missing = 0
+    for sequences in sequences_by_origin.values():
+        if not sequences:
+            continue
+        origin_expected = max(sequences) - min(sequences) + 1
+        expected += origin_expected
+        missing += max(origin_expected - len(sequences), 0)
+
+    packet_loss = (missing / expected * 100) if expected else 0.0
+
+    return GroupMetrics(
+        group=group,
+        messages=len(ordered),
+        bytes=total_bytes,
+        duration_seconds=round(duration, 3),
+        messages_per_second=round(len(ordered) / duration_for_rate, 3),
+        throughput_bps=round((total_bytes * 8) / duration_for_rate, 3),
+        avg_delay_ms=round(sum(delays) / len(delays), 3) if delays else None,
+        jitter_ms=round(sum(jitter_values) / len(jitter_values), 3) if jitter_values else None,
+        expected_messages=expected,
+        missing_messages=missing,
+        packet_loss_percent=round(packet_loss, 3),
+    )
+
+
+def calculate_traffic_metrics(tail: int) -> TrafficMetrics:
+    samples, ignored = parse_server_logs(tail)
+    samples_by_group: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for sample in samples:
+        samples_by_group[sample["group"]].append(sample)
+
+    return TrafficMetrics(
+        source=f"server logs tail={tail}",
+        parsed_lines=len(samples),
+        ignored_lines=ignored,
+        groups={
+            group: calculate_group_metrics(group, group_samples)
+            for group, group_samples in sorted(samples_by_group.items())
+        },
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     docker_client().ping()
@@ -139,6 +267,23 @@ def logs(container_name: str, tail: int = Query(default=80, ge=1, le=500)) -> di
     container = get_container(container_name)
     output = container.logs(tail=tail).decode("utf-8", errors="replace")
     return {"container": container_name, "logs": output}
+
+
+@app.get("/metrics/traffic", response_model=TrafficMetrics)
+def traffic_metrics(tail: int = Query(default=1000, ge=10, le=5000)) -> TrafficMetrics:
+    return calculate_traffic_metrics(tail)
+
+
+@app.get("/metrics/traffic/{group}", response_model=GroupMetrics)
+def traffic_metrics_by_group(
+    group: str,
+    tail: int = Query(default=1000, ge=10, le=5000),
+) -> GroupMetrics:
+    metrics = calculate_traffic_metrics(tail)
+    normalized_group = group.lower()
+    if normalized_group not in metrics.groups:
+        raise HTTPException(status_code=404, detail=f"Grupo sem metricas: {group}")
+    return metrics.groups[normalized_group]
 
 
 @app.get("/sensors")

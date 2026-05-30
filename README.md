@@ -238,6 +238,8 @@ GET  /health
 GET  /status
 GET  /containers
 GET  /logs/server
+GET  /metrics/traffic
+GET  /metrics/traffic/{group}
 GET  /sensors
 GET  /gateways
 GET  /gateways/{gateway}/iptables
@@ -257,7 +259,17 @@ Exemplos com `curl`:
 ```bash
 curl http://localhost:8000/status
 curl http://localhost:8000/logs/server
+curl http://localhost:8000/metrics/traffic
+curl http://localhost:8000/metrics/traffic/enfermaria
 curl -X POST http://localhost:8000/policies/enfermaria/limit
 curl -X POST http://localhost:8000/policies/triagem/block
 curl -X POST http://localhost:8000/policies/restore
 ```
+
+As metricas de trafego sao calculadas a partir dos logs do servidor hospitalar:
+
+- `messages`: quantidade de mensagens recebidas;
+- `throughput_bps`: vazao estimada em bits por segundo;
+- `avg_delay_ms`: atraso medio calculado pelo timestamp enviado pelo sensor;
+- `jitter_ms`: variacao media entre atrasos consecutivos;
+- `packet_loss_percent`: perda estimada por lacunas na sequencia de mensagens por origem.
