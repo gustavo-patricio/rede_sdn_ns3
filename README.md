@@ -92,6 +92,8 @@ Subir todos os containers:
 docker compose up -d --build
 ```
 
+O Compose usa o nome fixo de projeto `atividad_6`. Isso evita que a API marque containers como `missing` quando o repositorio for clonado em uma pasta com outro nome.
+
 Verificar o estado:
 
 ```bash
@@ -341,6 +343,8 @@ Fluxo recomendado:
 ## Metricas
 
 As metricas de trafego sao calculadas a partir dos logs do servidor hospitalar.
+
+Quando ainda nao existem amostras nos logs, os grupos validos continuam aparecendo com contadores zerados. Isso ajuda o frontend a diferenciar "grupo sem trafego ainda" de "grupo invalido".
 
 Principais campos:
 

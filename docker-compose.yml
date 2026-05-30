@@ -1,3 +1,5 @@
+name: atividad_6
+
 services:
   controller:
     build:

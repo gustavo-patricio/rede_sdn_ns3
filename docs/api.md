@@ -647,6 +647,8 @@ Response: `CommandResult`.
 
 Retorna metricas de todos os grupos calculadas a partir dos logs do servidor.
 
+Grupos validos sempre aparecem na resposta. Se ainda nao houver amostras para um grupo, os contadores numericos retornam `0` e campos de atraso retornam `null`.
+
 Query params:
 
 | Parametro | Tipo | Obrigatorio | Padrao | Limite |
@@ -700,6 +702,8 @@ Response: `SensorMetricsCollection`.
 ### GET /groups/{group}/sensors/metrics
 
 Retorna metricas por sensor de um grupo especifico.
+
+Se o grupo for valido, mas ainda nao houver amostras por sensor nos logs, a resposta sera um objeto vazio `{}`.
 
 Path params:
 

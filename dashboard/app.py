@@ -523,7 +523,7 @@ def calculate_sensor_metrics_collection(tail: int) -> SensorMetricsCollection:
     for sample in samples:
         samples_by_group_sensor[sample["group"]][sample["sensor"]].append(sample)
 
-    groups = {}
+    groups: dict[str, dict[str, SensorMetrics]] = {group: {} for group in sorted(SENSORS)}
     for group, sensors in sorted(samples_by_group_sensor.items()):
         groups[group] = {
             sensor: calculate_sensor_metrics(group, sensor, sensor_samples)
@@ -549,8 +549,8 @@ def calculate_traffic_metrics(tail: int) -> TrafficMetrics:
         parsed_lines=len(samples),
         ignored_lines=ignored,
         groups={
-            group: calculate_group_metrics(group, group_samples)
-            for group, group_samples in sorted(samples_by_group.items())
+            group: calculate_group_metrics(group, samples_by_group.get(group, []))
+            for group in sorted(SENSORS)
         },
     )
 
@@ -646,10 +646,8 @@ def traffic_metrics_by_group(
     group: str,
     tail: int = Query(default=1000, ge=10, le=5000),
 ) -> GroupMetrics:
+    normalized_group = ensure_group(group)
     metrics = calculate_traffic_metrics(tail)
-    normalized_group = group.lower()
-    if normalized_group not in metrics.groups:
-        raise HTTPException(status_code=404, detail=f"Grupo sem metricas: {group}")
     return metrics.groups[normalized_group]
 
 
@@ -689,8 +687,6 @@ def group_sensor_metrics(
 ) -> dict[str, SensorMetrics]:
     normalized_group = ensure_group(group)
     metrics = calculate_sensor_metrics_collection(tail)
-    if normalized_group not in metrics.groups:
-        raise HTTPException(status_code=404, detail=f"Grupo sem metricas: {group}")
     return metrics.groups[normalized_group]
 
 
@@ -707,9 +703,7 @@ def single_sensor_metrics(
     normalized_group = ensure_group(group)
     metrics = calculate_sensor_metrics_collection(tail)
     group_metrics = metrics.groups.get(normalized_group)
-    if not group_metrics:
-        raise HTTPException(status_code=404, detail=f"Grupo sem metricas: {group}")
-    if sensor not in group_metrics:
+    if not group_metrics or sensor not in group_metrics:
         raise HTTPException(status_code=404, detail=f"Sensor sem metricas: {sensor}")
     return group_metrics[sensor]
 
