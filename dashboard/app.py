@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import re
 import shlex
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
@@ -16,9 +19,19 @@ from docker.errors import DockerException, NotFound
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
+import ingester
+import storage
+
 
 PROJECT_NAME = os.getenv("COMPOSE_PROJECT_NAME", "atividad_6")
 SERVER_IP = os.getenv("SERVER_IP", "10.0.100.10")
+
+METRICS_DB_PATH = os.getenv("METRICS_DB_PATH", "/data/metrics.db")
+INGEST_INTERVAL_S = float(os.getenv("INGEST_INTERVAL_S", "30"))
+INGEST_TAIL = int(os.getenv("INGEST_TAIL", "1000"))
+INGEST_ENABLED = os.getenv("INGEST_ENABLED", "true").lower() not in {"false", "0", "no", "off"}
+
+logger = logging.getLogger("dashboard")
 
 GATEWAYS = {
     "uti": "gw-uti",
@@ -232,6 +245,71 @@ class SensorControlState(BaseModel):
     control: dict[str, Any]
 
 
+class SensorMetricsSnapshot(BaseModel):
+    id: int
+    captured_at: str
+    tail: int
+    grupo: str
+    sensor: str
+    messages: int | None
+    bytes: int | None
+    duration_seconds: float | None
+    messages_per_second: float | None
+    throughput_bps: float | None
+    avg_payload_bytes: float | None
+    avg_delay_ms: float | None
+    min_delay_ms: float | None
+    max_delay_ms: float | None
+    jitter_ms: float | None
+    expected_messages: int | None
+    missing_messages: int | None
+    packet_loss_percent: float | None
+    first_seen: str | None
+    last_seen: str | None
+    last_sequence: int | None
+    origins: list[str] | None
+    last_reading: dict[str, Any] | None
+    reading_stats: dict[str, Any] | None
+
+
+class TimeseriesStats(BaseModel):
+    db_path: str
+    ingest_enabled: bool
+    ingest_interval_s: float
+    ingest_tail: int
+    total_rows: int
+    first_capture: str | None
+    last_capture: str | None
+    distinct_groups: int
+    distinct_sensors: int
+
+
+class PaginatedSnapshots(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    order: str
+    items: list[SensorMetricsSnapshot]
+
+
+class SeriesPoint(BaseModel):
+    t: str
+    v: float | int | None
+
+
+class SensorSeries(BaseModel):
+    group: str
+    sensor: str
+    points: list[SeriesPoint]
+
+
+class TimeseriesSeries(BaseModel):
+    metric: str
+    since: str | None
+    until: str | None
+    series: list[SensorSeries]
+
+
 class GatewayStatus(BaseModel):
     group: str
     container: str
@@ -259,10 +337,50 @@ class PolicyEndpoint(BaseModel):
     status_endpoint: str
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    stop_event = asyncio.Event()
+    task: asyncio.Task | None = None
+
+    if INGEST_ENABLED:
+        try:
+            await asyncio.to_thread(storage.init_db, METRICS_DB_PATH)
+            task = asyncio.create_task(
+                ingester.ingest_loop(
+                    snapshot_fn=calculate_sensor_metrics_collection,
+                    db_path=METRICS_DB_PATH,
+                    tail=INGEST_TAIL,
+                    interval_s=INGEST_INTERVAL_S,
+                    stop_event=stop_event,
+                )
+            )
+            logger.info(
+                "persistencia ativa: db=%s interval=%ss tail=%s",
+                METRICS_DB_PATH,
+                INGEST_INTERVAL_S,
+                INGEST_TAIL,
+            )
+        except Exception as exc:
+            logger.warning("persistencia desativada: %s", exc)
+    else:
+        logger.info("persistencia desativada por INGEST_ENABLED=false")
+
+    try:
+        yield
+    finally:
+        stop_event.set()
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                task.cancel()
+
+
 app = FastAPI(
     title="API SDN/NFV - Rede Hospitalar IoMT",
     description="API local para diagnosticar containers e aplicar politicas VNF.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 
@@ -1195,3 +1313,139 @@ def apply_scenario(name: str) -> dict[str, Any]:
 @app.post("/policies/restore", response_model=dict[str, CommandResult], tags=["politicas"])
 def restore_all() -> dict[str, CommandResult]:
     return restore_all_policies_results()
+
+
+def fetch_latest_snapshots(group: str | None, sensor: str | None) -> list[SensorMetricsSnapshot]:
+    if group is not None:
+        ensure_group(group)
+    if sensor is not None:
+        ensure_sensor(sensor)
+    try:
+        rows = storage.latest_snapshots(METRICS_DB_PATH, group=group, sensor=sensor)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"Falha ao consultar storage: {exc}") from exc
+    return [SensorMetricsSnapshot(**row) for row in rows]
+
+
+@app.get(
+    "/timeseries/sensors/latest",
+    response_model=list[SensorMetricsSnapshot],
+    tags=["timeseries"],
+)
+def timeseries_latest(
+    group: str | None = Query(default=None, description="Filtrar por grupo (uti, enfermaria, triagem)."),
+    sensor: str | None = Query(default=None, description="Filtrar por nome do sensor (ex.: sensor-cardiaco)."),
+) -> list[SensorMetricsSnapshot]:
+    return fetch_latest_snapshots(group, sensor)
+
+
+@app.get("/timeseries/stats", response_model=TimeseriesStats, tags=["timeseries"])
+def timeseries_stats() -> TimeseriesStats:
+    try:
+        data = storage.stats(METRICS_DB_PATH)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"Falha ao consultar storage: {exc}") from exc
+    return TimeseriesStats(
+        db_path=METRICS_DB_PATH,
+        ingest_enabled=INGEST_ENABLED,
+        ingest_interval_s=INGEST_INTERVAL_S,
+        ingest_tail=INGEST_TAIL,
+        total_rows=data.get("total_rows", 0) or 0,
+        first_capture=data.get("first_capture"),
+        last_capture=data.get("last_capture"),
+        distinct_groups=data.get("distinct_groups", 0) or 0,
+        distinct_sensors=data.get("distinct_sensors", 0) or 0,
+    )
+
+
+@app.get("/timeseries/metrics", tags=["timeseries"])
+def timeseries_metrics() -> dict[str, list[str]]:
+    return {"metrics": list(storage.ALLOWED_METRICS)}
+
+
+@app.get(
+    "/timeseries/sensors",
+    response_model=PaginatedSnapshots,
+    tags=["timeseries"],
+)
+def timeseries_sensors(
+    group: str | None = Query(default=None, description="Filtrar por grupo."),
+    sensor: str | None = Query(default=None, description="Filtrar por sensor."),
+    since: str | None = Query(default=None, description="Data/hora minima (ISO 8601)."),
+    until: str | None = Query(default=None, description="Data/hora maxima (ISO 8601)."),
+    limit: int = Query(default=200, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0),
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+) -> PaginatedSnapshots:
+    if group is not None:
+        ensure_group(group)
+    if sensor is not None:
+        ensure_sensor(sensor)
+    try:
+        total = storage.count_snapshots(
+            METRICS_DB_PATH, group=group, sensor=sensor, since=since, until=until
+        )
+        rows = storage.query_snapshots(
+            METRICS_DB_PATH,
+            group=group,
+            sensor=sensor,
+            since=since,
+            until=until,
+            limit=limit,
+            offset=offset,
+            order=order,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"Falha ao consultar storage: {exc}") from exc
+
+    return PaginatedSnapshots(
+        total=total,
+        limit=limit,
+        offset=offset,
+        order=order,
+        items=[SensorMetricsSnapshot(**row) for row in rows],
+    )
+
+
+@app.get(
+    "/timeseries/series",
+    response_model=TimeseriesSeries,
+    tags=["timeseries"],
+)
+def timeseries_series(
+    metric: str = Query(..., description="Nome da metrica. Use /timeseries/metrics para listar."),
+    group: str | None = Query(default=None, description="Filtrar por grupo."),
+    sensor: str | None = Query(default=None, description="Filtrar por sensor."),
+    since: str | None = Query(default=None, description="Data/hora minima (ISO 8601)."),
+    until: str | None = Query(default=None, description="Data/hora maxima (ISO 8601)."),
+    limit: int = Query(default=5000, ge=1, le=20000),
+) -> TimeseriesSeries:
+    if group is not None:
+        ensure_group(group)
+    if sensor is not None:
+        ensure_sensor(sensor)
+    try:
+        rows = storage.query_series(
+            METRICS_DB_PATH,
+            metric=metric,
+            group=group,
+            sensor=sensor,
+            since=since,
+            until=until,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"Falha ao consultar storage: {exc}") from exc
+
+    grouped: dict[tuple[str, str], list[SeriesPoint]] = defaultdict(list)
+    for row in rows:
+        key = (row["grupo"], row["sensor"])
+        grouped[key].append(SeriesPoint(t=row["captured_at"], v=row["value"]))
+
+    series = [
+        SensorSeries(group=grupo, sensor=sensor_name, points=points)
+        for (grupo, sensor_name), points in sorted(grouped.items())
+    ]
+    return TimeseriesSeries(metric=metric, since=since, until=until, series=series)

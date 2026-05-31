@@ -23,13 +23,22 @@ O servidor hospitalar fica em `10.0.100.10:9000`. A API REST fica em `http://loc
 
 ## O Que Ja Esta Implementado
 
-- Sensores medicos simulados em Python.
+- Sensores medicos simulados em Python, com `interval`, `payload_padding_bytes`
+  e `enabled` controlaveis em runtime via arquivo `/tmp/sensor_control.json`.
 - Servidor hospitalar UDP em Python.
 - Gateways VNF com rotas, NAT, encaminhamento IP, `iptables` e `tc`.
-- Politicas VNF para limitar banda da enfermaria e bloquear trafego da triagem.
+- Politicas VNF dinamicas: `tc tbf` parametrizavel (`rate`, `burst`, `latency`),
+  `tc netem` parametrizavel (`delay`, `jitter`, `loss`, `duplicate`, `corrupt`,
+  `reorder`) e bloqueio da triagem.
+- Cenarios nomeados (`normal`, `congestionamento_enfermaria`, `surto_uti`,
+  `falha_triagem`) que combinam varias acoes em sequencia.
 - Controlador Ryu e topologia Mininet inicial.
 - Ambiente Docker Compose com servidor, sensores, gateways, controlador e API.
-- API REST FastAPI para status, logs, metricas, diagnostico dos gateways e acionamento de politicas.
+- API REST FastAPI para status, logs, metricas, diagnostico dos gateways e
+  acionamento de politicas, com Swagger em `/docs`.
+- Persistencia de snapshots de metricas em SQLite (`/data/metrics.db` via volume
+  nomeado `metrics_db`) com task assincrona de ingest no `lifespan` do FastAPI
+  e endpoints `/timeseries/*` para consumo por dashboards.
 - Documentacao detalhada dos contratos da API em `docs/api.md`.
 
 Ainda estao pendentes para etapas futuras:
@@ -51,6 +60,8 @@ Ainda estao pendentes para etapas futuras:
 │   └── Dockerfile
 ├── dashboard/
 │   ├── app.py
+│   ├── ingester.py
+│   ├── storage.py
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── docs/
@@ -58,12 +69,16 @@ Ainda estao pendentes para etapas futuras:
 ├── topology/
 │   └── hospital_topology.py
 ├── vnf/
+│   ├── aplicar_netem.sh
+│   ├── aplicar_tbf.sh
 │   ├── bloquear_triagem.sh
 │   ├── common.sh
 │   ├── gw_enfermaria.sh
 │   ├── gw_triagem.sh
 │   ├── gw_uti.sh
 │   ├── limitar_enfermaria.sh
+│   ├── remover_netem.sh
+│   ├── remover_tbf.sh
 │   ├── restaurar_politicas.sh
 │   └── Dockerfile
 ├── docker-compose.yml
@@ -200,6 +215,36 @@ POST /policies/enfermaria/restore
 POST /policies/triagem/block
 POST /policies/triagem/unblock
 POST /policies/restore
+POST /policies/{group}/limit            (TBF parametrizado por rate/burst/latency)
+POST /policies/{group}/limit/clear
+POST /policies/{group}/netem            (netem parametrizado por delay/jitter/loss/...)
+POST /policies/{group}/netem/clear
+```
+
+Sensores (controle em runtime):
+
+```text
+GET  /sensors/{sensor}/config
+POST /sensors/{sensor}/config           (body: interval, payload_padding_bytes, enabled)
+POST /sensors/{sensor}/start
+POST /sensors/{sensor}/stop
+```
+
+Cenarios:
+
+```text
+GET  /scenarios
+POST /scenarios/{name}
+```
+
+Series temporais (persistencia SQLite):
+
+```text
+GET /timeseries/stats
+GET /timeseries/metrics
+GET /timeseries/sensors/latest
+GET /timeseries/sensors
+GET /timeseries/series
 ```
 
 Rotas de compatibilidade:
@@ -271,6 +316,46 @@ Restaurar todas as politicas dinamicas:
 curl -X POST http://localhost:8000/policies/restore
 ```
 
+Aplicar `tc netem` parametrizado em um grupo:
+
+```bash
+curl -X POST http://localhost:8000/policies/triagem/netem \
+  -H "Content-Type: application/json" \
+  -d '{"delay_ms": 500, "jitter_ms": 100, "loss_pct": 30}'
+```
+
+Aplicar limitacao de banda customizada:
+
+```bash
+curl -X POST http://localhost:8000/policies/enfermaria/limit \
+  -H "Content-Type: application/json" \
+  -d '{"rate": "64kbit", "burst": "8kbit", "latency": "200ms"}'
+```
+
+Ajustar sensor em runtime (rajada na UTI):
+
+```bash
+curl -X POST http://localhost:8000/sensors/sensor-uti-1/config \
+  -H "Content-Type: application/json" \
+  -d '{"interval": 0.2, "payload_padding_bytes": 2048}'
+```
+
+Aplicar um cenario completo:
+
+```bash
+curl http://localhost:8000/scenarios
+curl -X POST http://localhost:8000/scenarios/surto_uti
+curl -X POST http://localhost:8000/scenarios/normal   # reverte qualquer cenario
+```
+
+Consultar series temporais persistidas (apos o ingest preencher o SQLite):
+
+```bash
+curl http://localhost:8000/timeseries/stats
+curl "http://localhost:8000/timeseries/sensors/latest?group=uti"
+curl "http://localhost:8000/timeseries/series?metric=avg_delay_ms&group=uti"
+```
+
 ## Status dos Gateways
 
 `GET /gateways` retorna os gateways por grupo com dados operacionais:
@@ -289,7 +374,8 @@ curl -X POST http://localhost:8000/policies/restore
     "tc_eth1": "qdisc noqueue 0: root refcnt 2 \n",
     "policies": {
       "bandwidth_limit_active": false,
-      "triage_block_active": false
+      "triage_block_active": false,
+      "network_emulation_active": false
     }
   }
 }
@@ -306,10 +392,20 @@ Campos importantes:
 | `tc_eth1` | Saida de `tc qdisc show dev eth1`. |
 | `policies.bandwidth_limit_active` | Indica se existe limitacao `tbf` ativa. |
 | `policies.triage_block_active` | Indica se existe bloqueio da triagem para o servidor. |
+| `policies.network_emulation_active` | Indica se existe `tc netem` ativo (degradacao de rede). |
 
 ## Politicas de Rede
 
-As politicas atuais sao acoes fixas e nao exigem payload no body. Para integrar com frontend, consulte primeiro:
+Existem dois conjuntos de politicas:
+
+- **Politicas fixas** (`/policies/...`) — acoes sem payload no body, ativadas/
+  restauradas com um `POST` simples. Sao as historicas: `enfermaria_limit`,
+  `enfermaria_restore`, `triagem_block`, `triagem_unblock`, `restore_all`.
+- **Politicas parametrizadas** (`/policies/{group}/limit`,
+  `/policies/{group}/netem` e seus `clear`) — aceitam body para configurar
+  `tc tbf` e `tc netem` por grupo. Detalhes em "Melhorias em Implementacao".
+
+Para descobrir as fixas, consulte primeiro:
 
 ```bash
 curl http://localhost:8000/policies
@@ -461,14 +557,16 @@ ovs-ofctl -O OpenFlow13 dump-flows s4
 
 ## Melhorias em Implementacao
 
-Esta secao documenta as melhorias planejadas para dar mais dinamica visual ao
-ambiente quando se interage com a API REST. Hoje o cenario "limitacao" e
-"bloqueio" mexem com `tc tbf` e `iptables`, mas o volume de trafego dos sensores
-(`~150 bytes` a cada `2s`) e ordens de magnitude menor que o teto de `256kbit`
-configurado, entao as metricas nao apresentam variacao perceptivel. As melhorias
-abaixo expoem parametros de degradacao realista de rede e tornam os sensores
-controlaveis em runtime para que cada acao da API gere efeito visivel em
-`avg_delay_ms`, `jitter_ms`, `packet_loss_percent` e `throughput_bps`.
+Esta secao documenta as melhorias **ja implementadas** para dar mais dinamica
+visual ao ambiente quando se interage com a API REST. O cenario original
+("limitacao" e "bloqueio") mexia com `tc tbf` e `iptables` em valores fixos,
+mas o volume de trafego dos sensores (`~150 bytes` a cada `2s`) era ordens de
+magnitude menor que o teto de `256kbit` configurado — as metricas nao
+apresentavam variacao perceptivel. As melhorias abaixo expoem parametros de
+degradacao realista de rede, tornam os sensores controlaveis em runtime e
+persistem as metricas para alimentar dashboards. Cada acao da API agora gera
+efeito visivel em `avg_delay_ms`, `jitter_ms`, `packet_loss_percent` e
+`throughput_bps`.
 
 ### 1. Emulacao de Rede com `tc netem`
 
@@ -525,7 +623,110 @@ POST /sensors/{name}/start         (docker start)
 POST /sensors/{name}/stop          (docker stop)
 ```
 
-### 4. Cenarios Nomeados
+### 4. Persistencia de Snapshots (SQLite)
+
+O endpoint `GET /sensors/metrics?tail=1000` entrega um agregado calculado
+sob demanda a partir dos logs do servidor. Para alimentar um dashboard com
+serie temporal, esse agregado e capturado periodicamente e persistido em
+SQLite (`/data/metrics.db`, montado via volume nomeado `metrics_db`).
+
+A captura roda em uma task assincrona dentro do FastAPI (`lifespan`), gerando
+uma linha por `(grupo, sensor)` a cada ciclo, com todas as metricas escalares
+da resposta original e os campos de shape variavel (`origins`, `last_reading`,
+`reading_stats`) serializados como JSON.
+
+Variaveis de ambiente:
+
+| Variavel | Default | Funcao |
+|---|---|---|
+| `METRICS_DB_PATH` | `/data/metrics.db` | Caminho do arquivo SQLite. |
+| `INGEST_INTERVAL_S` | `30` | Intervalo entre capturas. |
+| `INGEST_TAIL` | `1000` | Valor de `tail` usado em cada captura. |
+| `INGEST_ENABLED` | `true` | Desliga a task se `false`. |
+
+Endpoints disponiveis:
+
+```text
+GET /timeseries/stats
+GET /timeseries/metrics
+GET /timeseries/sensors/latest        (filtros opcionais: group, sensor)
+GET /timeseries/sensors               (paginacao por intervalo)
+GET /timeseries/series                (serie temporal por metrica)
+```
+
+`GET /timeseries/sensors` aceita:
+
+| Parametro | Default | Descricao |
+|---|---|---|
+| `group` | - | Filtra pelo grupo (`uti`, `enfermaria`, `triagem`). |
+| `sensor` | - | Filtra pelo sensor (ex.: `sensor-cardiaco`). |
+| `since` | - | Data/hora minima do `captured_at` (ISO 8601). |
+| `until` | - | Data/hora maxima do `captured_at` (ISO 8601). |
+| `limit` | `200` | Tamanho da pagina (max `2000`). |
+| `offset` | `0` | Deslocamento. |
+| `order` | `desc` | `asc` ou `desc` por `captured_at`. |
+
+Resposta inclui `total`, `limit`, `offset`, `order` e `items` (cada item e um
+`SensorMetricsSnapshot` completo, com os campos JSON desserializados).
+
+`GET /timeseries/series` retorna pontos `{t, v}` por sensor, prontos para
+graficos. Parametros:
+
+| Parametro | Default | Descricao |
+|---|---|---|
+| `metric` | obrigatorio | Nome da metrica (ver `/timeseries/metrics`). |
+| `group` | - | Filtra pelo grupo. |
+| `sensor` | - | Filtra pelo sensor. |
+| `since` | - | Data/hora minima (ISO 8601). |
+| `until` | - | Data/hora maxima (ISO 8601). |
+| `limit` | `5000` | Maximo de pontos (max `20000`). |
+
+Resposta:
+
+```json
+{
+  "metric": "avg_delay_ms",
+  "since": null,
+  "until": null,
+  "series": [
+    {
+      "group": "uti",
+      "sensor": "sensor-cardiaco",
+      "points": [
+        {"t": "2026-05-31T00:00:00+00:00", "v": 0.5},
+        {"t": "2026-05-31T00:00:30+00:00", "v": 0.6}
+      ]
+    }
+  ]
+}
+```
+
+Metricas suportadas (whitelist em `storage.ALLOWED_METRICS`): `messages`,
+`bytes`, `duration_seconds`, `messages_per_second`, `throughput_bps`,
+`avg_payload_bytes`, `avg_delay_ms`, `min_delay_ms`, `max_delay_ms`,
+`jitter_ms`, `expected_messages`, `missing_messages`, `packet_loss_percent`,
+`last_sequence`. Valores fora dessa lista retornam `400`.
+
+Exemplos:
+
+```bash
+curl http://localhost:8000/timeseries/stats
+curl http://localhost:8000/timeseries/metrics
+
+curl http://localhost:8000/timeseries/sensors/latest
+curl "http://localhost:8000/timeseries/sensors/latest?group=uti&sensor=sensor-cardiaco"
+
+curl "http://localhost:8000/timeseries/sensors?group=uti&limit=50&order=desc"
+curl "http://localhost:8000/timeseries/sensors?since=2026-05-31T00:00:00&until=2026-05-31T01:00:00"
+
+curl "http://localhost:8000/timeseries/series?metric=avg_delay_ms&group=uti"
+curl "http://localhost:8000/timeseries/series?metric=throughput_bps&sensor=sensor-cardiaco&since=2026-05-31T00:00:00"
+```
+
+Proximas etapas previstas (agregacao por grupo e retencao automatica)
+reusam a mesma tabela `sensor_metrics_snapshot`.
+
+### 5. Cenarios Nomeados
 
 Combinacoes pre-definidas de politicas para gerar evidencias e prints
 comparaveis. Cada cenario aplica varias acoes em sequencia.

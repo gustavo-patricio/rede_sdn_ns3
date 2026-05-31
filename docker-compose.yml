@@ -20,10 +20,15 @@ services:
     container_name: dashboard
     environment:
       COMPOSE_PROJECT_NAME: atividad_6
+      METRICS_DB_PATH: /data/metrics.db
+      INGEST_INTERVAL_S: "30"
+      INGEST_TAIL: "1000"
+      INGEST_ENABLED: "true"
     ports:
       - "8000:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - metrics_db:/data
     depends_on:
       - controller
       - server
@@ -260,3 +265,6 @@ networks:
       config:
         - subnet: 10.0.100.0/24
           gateway: 10.0.100.254
+
+volumes:
+  metrics_db:
